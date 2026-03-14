@@ -46,6 +46,12 @@ def load_taxonomy(en_path: Path, kr_path: Path | None = None) -> list[TaxonomyCa
     return categories
 
 
+def _to_snake_case(name: str) -> str:
+    normalized = re.sub(r"[()·,]", "", name)
+    normalized = re.sub(r"\s+", "_", normalized.strip())
+    return normalized.lower()
+
+
 def _parse_markdown(path: Path) -> list[TaxonomyCategory]:
     """단일 마크다운 파일에서 카테고리를 파싱."""
     text = path.read_text(encoding="utf-8")
@@ -54,11 +60,8 @@ def _parse_markdown(path: Path) -> list[TaxonomyCategory]:
     current_primary = ""
     current_secondary = ""
 
-    # ## N. Primary Category
     primary_pattern = re.compile(r"^##\s+\d+\.\s+(.+)$", re.MULTILINE)
-    # ### N-x. Secondary Category
     secondary_pattern = re.compile(r"^###\s+\d+-[a-z]\.\s+(.+)$", re.MULTILINE)
-    # 테이블 행: | N | **Tertiary** | Description |
     row_pattern = re.compile(
         r"^\|\s*\d+\s*\|\s*\*\*(.+?)\*\*\s*\|\s*(.+?)\s*\|$",
         re.MULTILINE,
@@ -68,17 +71,17 @@ def _parse_markdown(path: Path) -> list[TaxonomyCategory]:
     for line in lines:
         primary_match = primary_pattern.match(line)
         if primary_match:
-            current_primary = primary_match.group(1).strip()
+            current_primary = _to_snake_case(primary_match.group(1).strip())
             continue
 
         secondary_match = secondary_pattern.match(line)
         if secondary_match:
-            current_secondary = secondary_match.group(1).strip()
+            current_secondary = _to_snake_case(secondary_match.group(1).strip())
             continue
 
         row_match = row_pattern.match(line)
         if row_match and current_primary and current_secondary:
-            tertiary = row_match.group(1).strip()
+            tertiary = _to_snake_case(row_match.group(1).strip())
             description = row_match.group(2).strip()
             key = f"{current_primary}/{current_secondary}/{tertiary}"
 

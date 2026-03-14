@@ -68,6 +68,11 @@ def main() -> None:
     sec_company_parser.add_argument("--start-date", default=None, help="시작일 (YYYY-MM-DD)")
     sec_company_parser.add_argument("--end-date", default=None, help="종료일 (YYYY-MM-DD)")
 
+    # --- evaluate: Massive 정답셋 비교 평가 ---
+    eval_parser = subparsers.add_parser("evaluate", help="Massive API 정답셋과 파이프라인 결과 비교 평가")
+    eval_parser.add_argument("profiles", nargs="+", help="파이프라인 출력 JSON 파일 경로")
+    eval_parser.add_argument("--tickers", default=None, help="비교할 티커 (쉼표 구분, 미지정 시 JSON에서 추출)")
+
     # --- cluster: 산업 클러스터링 검증 ---
     cluster_parser = subparsers.add_parser("cluster", help="산업 클러스터링 검증 (Section 4.3)")
     cluster_parser.add_argument(
@@ -103,6 +108,8 @@ def main() -> None:
         asyncio.run(_cmd_company(args.corp_code, args.bgn_de, args.end_de))
     elif args.command == "refine":
         asyncio.run(_cmd_refine(args.rcept_no, args.corp_name, args.top_n))
+    elif args.command == "evaluate":
+        asyncio.run(_cmd_evaluate(args.profiles, args.tickers))
     elif args.command == "sec-extract":
         asyncio.run(_cmd_sec_extract(args.ticker, args.filing_date, args.period_end))
     elif args.command == "sec-company":
@@ -216,6 +223,56 @@ async def _cmd_refine(rcept_no: str, corp_name: str, top_n: int) -> None:
         )
 
     console.print(table)
+
+
+async def _cmd_evaluate(profile_paths: list[str], tickers_str: str | None) -> None:
+    from pathlib import Path
+
+    from riskope.evaluation.evaluator import (
+        MassiveGroundTruthFetcher,
+        evaluate_single,
+        extract_categories_from_ground_truth,
+        extract_categories_from_profile,
+        load_profile_from_json,
+        print_aggregate_evaluation,
+        print_company_evaluation,
+    )
+    from riskope.evaluation.metrics import AggregateEvaluation
+
+    settings = get_settings()
+    if not settings.massive_api_key:
+        console.print("[red]RISKOPE_MASSIVE_API_KEY 환경변수를 설정해주세요[/]")
+        sys.exit(1)
+
+    fetcher = MassiveGroundTruthFetcher(api_key=settings.massive_api_key)
+    agg = AggregateEvaluation()
+
+    for path_str in profile_paths:
+        profiles = load_profile_from_json(Path(path_str))
+        for profile in profiles:
+            ticker = profile.corp_name
+            filing_date = profile.filing_date or ""
+
+            console.print(f"\n[bold]Fetching ground truth for {ticker}...[/]")
+            gt_results = await fetcher.fetch_ground_truth(ticker=ticker, filing_date=filing_date or None)
+
+            if not gt_results:
+                console.print(f"  [yellow]No ground truth found for {ticker}[/]")
+                continue
+
+            gt_date = gt_results[0].get("filing_date", "") if gt_results else ""
+            gt_cats = extract_categories_from_ground_truth(gt_results, filing_date=gt_date)
+            pred_cats = extract_categories_from_profile(profile)
+
+            ev = evaluate_single(pred_cats, gt_cats, ticker=ticker, filing_date=gt_date)
+            agg.companies.append(ev)
+            print_company_evaluation(ev)
+
+    if agg.companies:
+        console.print()
+        print_aggregate_evaluation(agg)
+    else:
+        console.print("[red]No evaluations completed[/]")
 
 
 async def _cmd_sec_extract(ticker: str, filing_date: str | None, period_end: str | None) -> None:
