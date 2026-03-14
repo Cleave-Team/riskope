@@ -25,6 +25,26 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", description="OpenAI API 키")
     massive_api_key: str = Field(default="", description="Massive.com SEC API 키")
 
+    # --- Database ---
+    postgres_host: str = Field(default="localhost", validation_alias="POSTGRES_HOST")
+    postgres_port: int = Field(default=5432, validation_alias="POSTGRES_PORT")
+    postgres_user: str = Field(default="riskope", validation_alias="POSTGRES_USER")
+    postgres_password: str = Field(default="riskope", validation_alias="POSTGRES_PASSWORD")
+    postgres_database: str = Field(default="riskope", validation_alias="POSTGRES_DATABASE")
+
+    @property
+    def database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_database}"
+        )
+
+    # --- S3 ---
+    s3_bucket: str = Field(default="riskope-filings", description="S3 버킷명")
+    s3_region: str = Field(default="ap-northeast-2", description="S3 리전")
+    s3_access_key: str = Field(default="", description="AWS access key (빈 값이면 IAM role)")
+    s3_secret_key: str = Field(default="", description="AWS secret key")
+
     # --- LLM 설정 ---
     extraction_model: str = Field(
         default="gpt-4o",
