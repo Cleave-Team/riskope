@@ -61,7 +61,7 @@ class Settings(BaseSettings):
         description="청크 최대 문자 수",
     )
     chunk_overlap_chars: int = Field(
-        default=500,
+        default=1000,
         description="청크 간 겹침 문자 수",
     )
 

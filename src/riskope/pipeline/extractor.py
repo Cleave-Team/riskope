@@ -30,6 +30,8 @@ _SYSTEM_PROMPT_KR = """\
 
 규칙:
 - 가능한 한 많은 개별 리스크를 식별하세요
+- 하나의 문단이 여러 리스크를 언급하면 각각 별도로 추출하세요
+- 예: "금리 변동과 환율 리스크"가 함께 언급되면 금리와 환율을 별도 리스크로 추출
 - 각 리스크는 구체적이고 구별 가능해야 합니다
 - 인용문은 반드시 원문 텍스트에서 그대로 가져와야 합니다
 - 태그는 한국어로 작성하세요
@@ -48,6 +50,8 @@ For each risk:
 
 Rules:
 - Identify as many individual risk factors as possible
+- When a single paragraph mentions multiple distinct risks, extract each separately
+- Example: "interest rate fluctuations and foreign exchange risks" should yield two separate risk factors
 - Each risk must be specific and distinguishable
 - Quotes must be copied verbatim from the source text
 - Tags must be in English

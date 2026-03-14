@@ -32,6 +32,9 @@ _JUDGE_SYSTEM_PROMPT_KR = """\
 2 = 부적절한 매칭: 상당한 불일치
 1 = 매우 부적절: 명백히 잘못된 분류
 
+중요: 인용문이 해당 카테고리의 리스크를 직접적으로 언급해야 합니다.
+맥락상 추론만으로는 4점 이상을 줄 수 없습니다.
+
 반드시 점수와 함께 한 문장으로 이유를 설명하세요.
 """
 
@@ -46,6 +49,9 @@ Rating scale (1-5):
 3 = Adequate fit: Reasonable but some gaps
 2 = Poor fit: Significant misalignment
 1 = Very poor fit: Clearly wrong classification
+
+Important: The quote must directly reference the risk described by the category.
+Do not give 4 or above based on contextual inference alone.
 
 You must provide both a numerical score and a concise one-sentence reasoning.
 """
