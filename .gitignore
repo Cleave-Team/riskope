@@ -23,7 +23,6 @@ wheels/
 
 # Data
 output/
-data/taxonomy.lancedb/
 *.csv
 *.jsonl
 
