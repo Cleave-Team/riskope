@@ -1,23 +1,29 @@
 # Riskope
 
-DART 공시 기반 택소노미 정렬 리스크 팩터 추출 엔진.
+DART/SEC 공시 기반 택소노미 정렬 리스크 팩터 추출 엔진.
 
-한국 기업 사업보고서(DART)에서 리스크 팩터를 자동 추출하고, 140개 카테고리의 3-tier 택소노미에 매핑합니다. [Taxonomy-Aligned Risk Extraction from 10-K Filings with Autonomous Improvement Using LLMs](https://arxiv.org/abs/2601.15247) 논문의 파이프라인을 한국 DART 공시 환경에 맞게 역공학 구현한 프로젝트입니다.
+한국 기업 사업보고서(DART)와 미국 기업 연례보고서(SEC 10-K)에서 리스크 팩터를 자동 추출하고, 140개 카테고리의 3-tier 택소노미에 매핑합니다. [Taxonomy-Aligned Risk Extraction from 10-K Filings with Autonomous Improvement Using LLMs](https://arxiv.org/abs/2601.15247) 논문의 파이프라인을 역공학 구현한 프로젝트입니다.
 
 ## 개요
 
-미국 SEC 10-K 보고서의 Item 1A(Risk Factors)를 대상으로 설계된 논문의 방법론을, 한국 전자공시시스템(DART)의 사업보고서에 적용합니다. 한국 보고서는 리스크 전용 섹션(Item 1A 대응)이 없으므로, "사업의 내용"과 "위험관리 및 파생거래" 등 복수 섹션을 결합하여 포괄적인 리스크 추출을 수행합니다.
+| | DART (한국) | SEC (미국) |
+|---|---|---|
+| 데이터 소스 | DART Open API | Massive.com SEC API |
+| 대상 문서 | 사업보고서 (사업의 내용 + 위험관리) | 10-K Item 1A |
+| 언어 | 한국어 | 영문 |
+| 임베딩 | EN+KR description 결합 | EN description만 (논문 원문) |
+| 사용 방식 | CLI 또는 API 서버 | CLI |
 
 ## 3-Stage 파이프라인
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        DART 사업보고서                                │
-│          main.do → tree node 파싱 → 복수 섹션 fetch                   │
-│       (사업의 내용 + 위험관리 및 파생거래 → UTF-8 markdown)              │
+│                   DART 사업보고서 / SEC 10-K                          │
+│    DART: main.do → tree node 파싱 → 복수 섹션 fetch → markdown       │
+│    SEC:  Massive API → Item 1A plain text                           │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │
-                    TextChunker (12,000자 단위)
+                    TextChunker (12,000자 / 1,000자 overlap)
                            │
               ┌────────────▼────────────────┐
               │   Stage 1: LLM 리스크 추출    │
@@ -44,119 +50,91 @@ DART 공시 기반 택소노미 정렬 리스크 팩터 추출 엔진.
                            │
               ┌────────────▼────────────────┐
               │      최종 리스크 프로필         │
-              │    output/{기업명}_{id}.json  │
+              │  CLI: output/{기업명}_{id}.json│
+              │  API: PostgreSQL + S3 저장   │
               └─────────────────────────────┘
 ```
 
-### Stage 1: LLM 기반 리스크 추출
-
-LLM(GPT-4o)에게 원문 텍스트를 제공하고, 택소노미 없이 자유롭게 리스크를 추출합니다.
-
-- **택소노미 미제공**: Context bloat를 방지하고 이해(comprehension)와 분류(categorization)를 분리
-- **Structured Output**: Function calling으로 `tag` + `supporting_quote` 쌍을 안정적으로 파싱
-- **Chain-of-Thought**: 근거 인용문 요구로 hallucination 억제
-- **자동 재시도**: API 오류 또는 빈 응답 시 최대 3회 exponential backoff 재시도
-
-### Stage 2: 임베딩 기반 택소노미 매핑
-
-추출된 리스크의 supporting_quote를 임베딩하여 140개 택소노미 카테고리에 매핑합니다.
-
-- **모델**: OpenAI `text-embedding-3-small` (1536차원)
-- **Task Instruction**: 한국어 기업 보고서에 최적화된 task instruction을 prepend하여 임베딩 품질 향상
-- **Nearest Neighbor**: 정규화된 dot product (= cosine similarity)로 매트릭스 연산
-- **사전 임베딩**: 택소노미 임베딩을 LanceDB(`data/taxonomy.lancedb/`)에 저장하여 git으로 배포, API 호출 없이 즉시 사용 가능
-
-### Stage 3: LLM-as-Judge 검증
-
-별도 LLM(GPT-4o-mini)이 각 매핑의 품질을 독립적으로 평가합니다.
-
-- **Spurious Mapping 문제 해결**: Nearest neighbor는 부적절한 카테고리에도 매핑할 수 있으므로 LLM이 검증
-- **1-5 품질 점수**: 5=완벽 일치, 4=좋은 매칭, 3=적절, 2=부적절, 1=명백히 오류
-- **Threshold**: 기본값 ≥4 이상만 최종 결과에 포함
-- **동시 평가**: asyncio semaphore(10)로 병렬 처리
-
-### Dedup (중복 제거)
-
-같은 택소노미 카테고리에 매핑된 리스크가 여러 개일 경우, quality_score가 높은 것을 우선 선택하고 동점 시 similarity_score로 tiebreak합니다.
-
 ## 택소노미
 
-논문과 동일한 140개 3-tier 리스크 택소노미를 사용합니다.
+논문과 동일한 140개 3-tier 리스크 택소노미를 사용합니다. 카테고리명은 snake_case로 Massive API와 동일합니다.
 
 | Primary (7) | Secondary (28) | Tertiary (140) |
 |---|---|---|
-| Strategic & Competitive | Market Position, Innovation, Strategic Execution | 20개 |
-| Operational & Execution | Core Operations, Supply Chain, Human Capital, Project Management | 20개 |
-| Financial & Market | Capital Structure, Credit & Liquidity, Market & Investment, International & Currency | 20개 |
-| Technology & Information | Cybersecurity, Digital Transformation, Information Management, Tech Infrastructure | 20개 |
-| Regulatory & Compliance | Industry Regulation, Legal, Data & Privacy, Tax & Reporting | 20개 |
-| External & Systemic | Economic Conditions, Geopolitical, Natural Events, Social & Demographic | 20개 |
-| Governance & Stakeholder | Board & Leadership, Reputation, Stakeholder Relations | 20개 |
+| strategic_and_competitive | market_position_and_competition, innovation_and_product_development... | 20개 |
+| operational_and_execution | core_operations, supply_chain_and_procurement... | 20개 |
+| financial_and_market | capital_structure_and_performance, credit_and_liquidity... | 20개 |
+| technology_and_information | cybersecurity_and_data_protection, digital_transformation... | 20개 |
+| regulatory_and_compliance | industry_regulation, legal_and_litigation... | 20개 |
+| external_and_systemic | economic_and_market_conditions, geopolitical_and_trade... | 20개 |
+| governance_and_stakeholder | corporate_governance, reputation_and_brand... | 20개 |
 
 택소노미 정의는 `docs/massive_risk_categories.md` (영문)과 `docs/massive_risk_categories_kr.md` (한국어)에 있습니다.
-
-## DART 문서 수집
-
-한국 사업보고서는 미국 10-K와 달리 리스크 전용 섹션이 없습니다. 이를 해결하기 위해 복수 섹션을 가져옵니다.
-
-### 섹션 선택 전략
-
-| 우선순위 | 패턴 | 설명 |
-|---|---|---|
-| 1순위 | `사업의 위험` | US Item 1A 대응 (존재 시 단독 충분, 드묾) |
-| 2순위 | `사업의 내용` + `위험관리 및 파생거래` | 사업 리스크 + 재무 리스크를 합쳐서 포괄적 커버리지 |
-| Fallback | 전문 문서 → regex 추출 | tree node 파싱 실패 시 |
-
-### 수집 방식
-
-```
-DART main.do (rcpNo)
-  → JavaScript tree node 파싱 (eleId, offset, length, dcmNo, dtd)
-  → 위험 관련 노드 선택 (복수 가능)
-  → viewer.do에 섹션별 파라미터로 요청
-  → UTF-8 인코딩 HTML 수신
-  → markdownify로 변환
-```
-
-DART의 전체 문서 요청(`eleId=0&offset=0&length=0`)은 XBRL 형식으로 한글 인코딩이 깨지는 문제가 있습니다. 섹션별 요청은 UTF-8로 정상 제공되므로 tree node 기반 접근을 사용합니다.
 
 ## 프로젝트 구조
 
 ```
 riskope/
 ├── src/riskope/
-│   ├── __init__.py
-│   ├── cli.py                    # CLI 엔트리포인트 (extract, company, taxonomy)
-│   ├── config.py                 # pydantic-settings 기반 설정 (RISKOPE_ prefix)
-│   ├── models.py                 # Pydantic 데이터 모델
+│   ├── cli.py                        # CLI 엔트리포인트
+│   ├── config.py                     # pydantic-settings 설정
+│   ├── models.py                     # Pydantic 데이터 모델
 │   ├── dart/
-│   │   └── client.py             # DART API 클라이언트 (tree node 파싱, 섹션 fetch)
+│   │   └── client.py                 # DART API 클라이언트
+│   ├── sec/
+│   │   └── client.py                 # Massive.com SEC API 클라이언트
 │   ├── pipeline/
-│   │   ├── extractor.py          # Stage 1: LLM 리스크 추출
-│   │   ├── mapper.py             # Stage 2: 임베딩 택소노미 매핑 (캐시 포함)
-│   │   ├── judge.py              # Stage 3: LLM-as-Judge 검증
-│   │   ├── chunker.py            # 텍스트 청킹 (12,000자 단위, 500자 overlap)
-│   │   ├── dedup.py              # 택소노미 키 기준 중복 제거
-│   │   └── orchestrator.py       # 파이프라인 오케스트레이터
+│   │   ├── extractor.py              # Stage 1: LLM 리스크 추출 (locale=kr/en)
+│   │   ├── mapper.py                 # Stage 2: 임베딩 매핑 (LanceDB 캐시)
+│   │   ├── judge.py                  # Stage 3: LLM-as-Judge
+│   │   ├── chunker.py                # 텍스트 청킹
+│   │   ├── dedup.py                  # 중복 제거
+│   │   ├── orchestrator.py           # DART 파이프라인 오케스트레이터
+│   │   ├── sec_orchestrator.py       # SEC 파이프라인 오케스트레이터
+│   │   └── refiner.py                # 자율 택소노미 개선
+│   ├── api/
+│   │   ├── app.py                    # FastAPI 앱
+│   │   ├── schemas.py                # 요청/응답 스키마
+│   │   ├── service.py                # 캐시 로직 + 파이프라인 연동
+│   │   ├── db/
+│   │   │   ├── models.py             # SQLAlchemy 모델
+│   │   │   ├── session.py            # async 세션
+│   │   │   └── migrations/           # Alembic 마이그레이션
+│   │   │       └── versions/
+│   │   │           └── 001_initial_schema.py
+│   │   └── routers/
+│   │       ├── companies.py          # /api/v1/companies/*
+│   │       ├── jobs.py               # /api/v1/jobs/*
+│   │       └── taxonomy.py           # /api/v1/taxonomy, /health
+│   ├── storage/
+│   │   └── s3.py                     # S3 업로드/다운로드
+│   ├── evaluation/
+│   │   ├── metrics.py                # Precision/Recall/F1/Jaccard
+│   │   └── evaluator.py              # Massive 정답셋 비교
+│   ├── clustering/
+│   │   └── validator.py              # 산업 클러스터링 검증 (논문 Section 4.3)
 │   └── taxonomy/
-│       └── loader.py             # Markdown 택소노미 파서 (EN/KR 정렬)
+│       └── loader.py                 # Markdown 택소노미 파서
 ├── docs/
-│   ├── risk-factor.pdf           # 원본 논문 (arXiv 2601.15247)
+│   ├── risk-factor.pdf               # 원본 논문 (arXiv 2601.15247)
 │   ├── massive_risk_categories.md    # 택소노미 정의 (영문)
 │   └── massive_risk_categories_kr.md # 택소노미 정의 (한국어)
-├── data/
-│   └── taxonomy.lancedb/         # 사전 계산된 택소노미 임베딩 (git 포함, ~1MB)
-├── tests/                        # 85개 테스트
-├── output/                       # 결과 JSON 출력 디렉토리
+├── reports/
+│   └── evaluation_report.md          # S&P 500 평가 보고서
+├── tests/                            # 130개 테스트
+├── output/                           # CLI 결과 JSON 출력
+├── alembic.ini
 └── pyproject.toml
 ```
 
-## 설치 및 실행
+## 설치
 
 ### 요구사항
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) 패키지 매니저
+- PostgreSQL (API 서버 사용 시)
+- AWS S3 버킷 (API 서버 사용 시)
 
 ### 설치
 
@@ -170,22 +148,41 @@ uv sync
 cp .env.example .env
 ```
 
-`.env` 파일에 API 키를 설정합니다:
-
 ```env
-# 필수
-RISKOPE_DART_API_KEY=your_dart_api_key      # https://opendart.fss.or.kr/ 에서 발급
-RISKOPE_OPENAI_API_KEY=your_openai_api_key
+# API Keys (필수)
+RISKOPE_DART_API_KEY=           # https://opendart.fss.or.kr/
+RISKOPE_OPENAI_API_KEY=         # OpenAI API 키
 
-# 선택 (기본값 사용 가능)
-RISKOPE_EXTRACTION_MODEL=gpt-4o             # Stage 1 모델
-RISKOPE_JUDGE_MODEL=gpt-4o-mini             # Stage 3 모델
-RISKOPE_EMBEDDING_MODEL=text-embedding-3-small
-RISKOPE_EMBEDDING_DIMENSIONS=1536
-RISKOPE_JUDGE_THRESHOLD=4                   # Judge 통과 최소 점수 (1-5)
+# SEC 파이프라인 (SEC 사용 시)
+RISKOPE_MASSIVE_API_KEY=        # https://massive.com/
+
+# Database (API 서버 사용 시)
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=riskope
+POSTGRES_PASSWORD=riskope
+POSTGRES_DATABASE=riskope
+
+# S3 (API 서버 사용 시)
+RISKOPE_S3_BUCKET=riskope-filings
+RISKOPE_S3_REGION=ap-northeast-2
+RISKOPE_S3_ACCESS_KEY=          # 빈 값이면 IAM role 사용
+RISKOPE_S3_SECRET_KEY=
+
+# LLM 모델 설정 (선택)
+# RISKOPE_EXTRACTION_MODEL=gpt-4o
+# RISKOPE_JUDGE_MODEL=gpt-4o-mini
+# RISKOPE_EMBEDDING_MODEL=text-embedding-3-small
+# RISKOPE_JUDGE_THRESHOLD=4
 ```
 
-### CLI 사용법
+---
+
+## 사용법 1: CLI
+
+DB/S3 없이 로컬에서 직접 실행. 결과는 `output/` 에 JSON으로 저장.
+
+### DART (한국 기업)
 
 ```bash
 # 택소노미 목록 확인 (140개 카테고리)
@@ -198,13 +195,121 @@ uv run riskope extract 20240315000957 --corp-name "SK하이닉스"
 uv run riskope company 00356361 --bgn-de 20230101 --end-de 20231231
 ```
 
-### 테스트 실행
+### SEC (미국 기업)
 
 ```bash
-uv run pytest tests/ -v
+# 단일 티커 최신 10-K 분석
+uv run riskope sec-extract AAPL
+
+# 특정 filing date 지정
+uv run riskope sec-extract MSFT --filing-date 2024-07-27
+
+# 여러 연도 분석
+uv run riskope sec-company AAPL --start-date 2020-01-01 --end-date 2024-12-31
 ```
 
-## 출력 형식
+### 정답셋 비교 평가
+
+```bash
+# Massive API 정답셋과 파이프라인 결과 비교
+uv run riskope evaluate output/AAPL_sec-AAPL.json
+
+# 여러 기업 동시 평가
+uv run riskope evaluate output/AAPL_*.json output/MSFT_*.json
+```
+
+---
+
+## 사용법 2: API 서버
+
+PostgreSQL + S3를 사용하는 프로덕션 모드. 결과를 DB에 캐싱하고 MD 파일을 S3에 저장.
+
+### DB 마이그레이션
+
+```bash
+alembic upgrade head
+```
+
+### 서버 실행
+
+```bash
+uv run uvicorn riskope.api.app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### API 엔드포인트
+
+| Method | Path | 설명 |
+|---|---|---|
+| `POST` | `/api/v1/companies/{corp_code}/analyze` | 분석 요청 |
+| `GET` | `/api/v1/companies/{corp_code}/risk-factors?years=5` | 최신 N년치 리스크 |
+| `GET` | `/api/v1/companies/{corp_code}/risk-factors/{year}` | 특정 연도 리스크 |
+| `GET` | `/api/v1/companies/{corp_code}/filings` | 분석된 공시 목록 |
+| `GET` | `/api/v1/companies/{corp_code}` | 기업 정보 |
+| `GET` | `/api/v1/jobs/{job_id}` | 비동기 작업 상태 |
+| `GET` | `/api/v1/taxonomy` | 택소노미 140개 카테고리 |
+| `GET` | `/api/v1/health` | 헬스체크 |
+
+### 캐시 플로우
+
+```
+POST /companies/00126380/analyze
+  │
+  ├─ DART API로 최신 rcept_no 확인
+  ├─ DB에 동일 rcept_no + status=completed 있으면 → 200 즉시 반환
+  └─ 없으면 → 202 Accepted + job_id (background 실행)
+               ├─ DART 위험 섹션 fetch
+               ├─ S3에 MD 저장 (dart/filings/{corp_code}/{year}/{rcept_no}.md)
+               ├─ 3-Stage 파이프라인 실행
+               └─ PostgreSQL에 결과 저장
+
+GET /jobs/{job_id}  →  { "status": "running", "progress": 45 }
+GET /jobs/{job_id}  →  { "status": "completed" }
+```
+
+### S3 저장 경로
+
+```
+s3://{bucket}/dart/filings/{corp_code}/{report_year}/{rcept_no}.md
+```
+
+---
+
+## DB 스키마
+
+```
+companies       corp_code, corp_name, stock_code
+filings         rcept_no, corp_code, rcept_dt, report_year, s3_md_path, status
+risk_factors    filing_id, primary/secondary/tertiary_category, supporting_quote, quality_score
+analysis_jobs   id(UUID), company_id, filing_id, status, progress
+```
+
+### Alembic 마이그레이션
+
+```bash
+# 새 마이그레이션 생성 (DB 연결 필요, 순차 번호 자동 부여)
+alembic revision --autogenerate -m "add column xyz"
+# → 002_add_column_xyz.py 생성
+
+alembic upgrade head    # 최신으로 올리기
+alembic downgrade -1    # 한 단계 롤백
+```
+
+---
+
+## CLI vs API 서버 비교
+
+| | CLI | API 서버 |
+|---|---|---|
+| DB 필요 | 없음 | PostgreSQL 필요 |
+| S3 필요 | 없음 | 필요 |
+| 결과 저장 | `output/*.json` | PostgreSQL |
+| 캐싱 | 없음 | rcept_no 기반 자동 캐시 |
+| 최신공시 확인 | 없음 | DART API로 자동 확인 |
+| 사용 목적 | 빠른 테스트, 연구 | 프로덕션 서비스 |
+
+---
+
+## 출력 형식 (CLI JSON)
 
 ```json
 [
@@ -215,9 +320,9 @@ uv run pytest tests/ -v
     "report_year": "",
     "risk_factors": [
       {
-        "primary": "Financial And Market",
-        "secondary": "International And Currency",
-        "tertiary": "Foreign Exchange And Currency Exposure",
+        "primary": "financial_and_market",
+        "secondary": "international_and_currency",
+        "tertiary": "foreign_exchange_and_currency_exposure",
         "supporting_quote": "연결회사는 국제적으로 영업활동을 영위하고 있어 외환위험...",
         "original_tag": "외환위험",
         "quality_score": 5,
@@ -233,19 +338,42 @@ uv run pytest tests/ -v
 ]
 ```
 
+---
+
+## 평가 결과 (S&P 500 상위 5개 기업)
+
+| 기업 | 산업 | Precision | Recall | F1 |
+|---|---|---|---|---|
+| XOM | Energy | 0.565 | 0.765 | **0.650** |
+| MSFT | Tech | 0.484 | 0.652 | 0.556 |
+| UNH | Healthcare | 0.692 | 0.429 | 0.529 |
+| AAPL | Tech | 0.457 | 0.533 | 0.492 |
+| JPM | Finance | 0.556 | 0.227 | 0.323 |
+| **평균** | | **0.551** | **0.521** | **0.510** |
+
+정답셋: Massive.com Risk Factors API. 상세 분석은 `reports/evaluation_report.md` 참조.
+
+---
+
 ## 논문과의 차이점
 
-| 항목 | 논문 (US 10-K) | Riskope (한국 DART) |
+| 항목 | 논문 (US 10-K) | Riskope |
 |---|---|---|
-| 대상 문서 | SEC 10-K Item 1A | DART 사업보고서 (사업의 내용 + 위험관리) |
+| 대상 문서 | SEC 10-K Item 1A | DART 사업보고서 (DART) + SEC 10-K (SEC) |
 | 추출 LLM | Claude 4.5 Sonnet | GPT-4o |
 | 임베딩 모델 | Qwen3 Embedding 0.6B (로컬) | OpenAI text-embedding-3-small (API) |
 | 임베딩 차원 | 1024 | 1536 |
 | Judge LLM | 논문 미명시 | GPT-4o-mini |
-| 언어 | 영문 | 한국어 |
 | 임베딩 저장소 | 미명시 | LanceDB (로컬 벡터 DB) |
+| 카테고리 표기 | Title Case | snake_case (Massive API 동일) |
 | 자율 택소노미 개선 | 구현 | 구현 |
 | 산업 클러스터링 검증 | 구현 | 구현 |
+
+## 테스트 실행
+
+```bash
+uv run pytest tests/ -v
+```
 
 ## 참고
 
