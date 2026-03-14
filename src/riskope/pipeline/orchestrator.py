@@ -167,6 +167,53 @@ class RiskExtractionPipeline:
             score_distribution={k: v for k, v in score_dist.items() if v > 0},
         )
 
+    async def run_for_report(
+        self,
+        risk_text: str,
+        corp_name: str,
+        rcept_no: str,
+    ) -> CompanyRiskProfile | None:
+        await self._ensure_taxonomy()
+
+        chunks = self._chunker.chunk(risk_text)
+        if len(chunks) > 1:
+            chunk_results = []
+            for i, chunk_text in enumerate(chunks, 1):
+                logger.info("청크 %d/%d 추출 중 (%d자)", i, len(chunks), len(chunk_text))
+                result = await self._extractor.extract(chunk_text)
+                chunk_results.append(result)
+            extraction = self._chunker.merge_extraction_results(chunk_results)
+        else:
+            extraction = await self._extractor.extract(risk_text)
+
+        if not extraction.risks:
+            return None
+
+        mappings = await self._mapper.map_risks(extraction.risks)
+
+        judge_results = await self._judge.evaluate_all(mappings)
+        self._all_judge_results.extend(judge_results)
+        passed_results = self._judge.filter_passed(judge_results)
+
+        score_dist = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+        for r in judge_results:
+            score_dist[r.quality_score.value] = score_dist.get(r.quality_score.value, 0) + 1
+
+        risk_factors = deduplicate_and_finalize(passed_results)
+
+        return CompanyRiskProfile(
+            corp_code="",
+            corp_name=corp_name,
+            rcept_no=rcept_no,
+            report_year="",
+            risk_factors=risk_factors,
+            raw_text_length=len(risk_text),
+            total_extracted=len(extraction.risks),
+            total_mapped=len(mappings),
+            total_validated=len(risk_factors),
+            score_distribution={k: v for k, v in score_dist.items() if v > 0},
+        )
+
     def get_refinement_candidates(self, top_n: int = 5) -> list[tuple[str, int]]:
         return self._refiner.identify_problematic_categories(self._all_judge_results, top_n=top_n)
 
