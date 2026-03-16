@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from google import genai
 from openai import AsyncOpenAI
 from rich.console import Console
 from rich.table import Table
@@ -31,6 +32,7 @@ class RiskExtractionPipeline:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
+        self._gemini = genai.Client(api_key=settings.gemini_api_key)
         self._openai = AsyncOpenAI(api_key=settings.openai_api_key)
         self._dart = DartClient(api_key=settings.dart_api_key)
 
@@ -39,7 +41,7 @@ class RiskExtractionPipeline:
             overlap_chars=settings.chunk_overlap_chars,
         )
         self._extractor = RiskExtractor(
-            client=self._openai,
+            gemini_client=self._gemini,
             model=settings.extraction_model,
             max_retries=settings.extraction_max_retries,
         )
@@ -49,14 +51,15 @@ class RiskExtractionPipeline:
             dimensions=settings.embedding_dimensions,
         )
         self._judge = MappingJudge(
-            client=self._openai,
+            gemini_client=self._gemini,
             model=settings.judge_model,
             threshold=settings.judge_threshold,
             max_concurrent=settings.max_concurrent_judge,
         )
 
         self._refiner = TaxonomyRefiner(
-            client=self._openai,
+            gemini_client=self._gemini,
+            openai_client=self._openai,
             analysis_model=settings.extraction_model,
             embedding_model=settings.embedding_model,
             embedding_dimensions=settings.embedding_dimensions,

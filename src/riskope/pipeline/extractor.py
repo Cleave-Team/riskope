@@ -12,7 +12,9 @@ import asyncio
 import json
 import logging
 
-from openai import AsyncOpenAI
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
 
 from riskope.models import ExtractedRisk, ExtractionResult
 
@@ -128,79 +130,41 @@ Avoid:
 
 _SYSTEM_PROMPTS = {"kr": _SYSTEM_PROMPT_KR, "en": _SYSTEM_PROMPT_EN}
 
-_EXTRACTION_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "report_risk_factors",
-            "description": "식별된 리스크 요인 목록을 보고합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "risks": {
-                        "type": "array",
-                        "description": "추출된 리스크 요인 목록",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "tag": {
-                                    "type": "string",
-                                    "description": "리스크를 요약하는 자유형 태그 (한국어)",
-                                },
-                                "supporting_quote": {
-                                    "type": "string",
-                                    "description": "원문에서 가져온 근거 인용문",
-                                },
-                            },
-                            "required": ["tag", "supporting_quote"],
-                        },
-                    },
-                },
-                "required": ["risks"],
-            },
-        },
-    }
-]
+
+class _RiskItem(BaseModel):
+    tag: str = Field(description="리스크를 요약하는 자유형 태그")
+    supporting_quote: str = Field(description="원문에서 가져온 근거 인용문")
+
+
+class _RiskList(BaseModel):
+    risks: list[_RiskItem] = Field(description="추출된 리스크 요인 목록")
 
 
 class RiskExtractor:
-    """Stage 1: LLM을 사용하여 리스크 텍스트에서 구조화된 리스크 목록 추출."""
-
     def __init__(
         self,
-        client: AsyncOpenAI,
-        model: str = "gpt-4o",
+        gemini_client: genai.Client,
+        model: str = "gemini-2.5-flash",
         max_retries: int = 3,
         locale: str = "kr",
     ) -> None:
-        self._client = client
+        self._client = gemini_client
         self._model = model
         self._max_retries = max_retries
         self._system_prompt = _SYSTEM_PROMPTS.get(locale, _SYSTEM_PROMPT_KR)
 
     async def extract(self, risk_text: str) -> ExtractionResult:
-        """위험 섹션 텍스트에서 리스크 요인을 추출.
-
-        Args:
-            risk_text: '사업의 위험' 섹션 원문 텍스트.
-
-        Returns:
-            추출된 리스크 목록과 메타데이터.
-        """
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._client.chat.completions.create(
+                response = await self._client.aio.models.generate_content(
                     model=self._model,
-                    messages=[
-                        {"role": "system", "content": self._system_prompt},
-                        {"role": "user", "content": risk_text},
-                    ],
-                    tools=_EXTRACTION_TOOLS,
-                    tool_choice={
-                        "type": "function",
-                        "function": {"name": "report_risk_factors"},
-                    },
-                    temperature=0.0,
+                    contents=[risk_text],
+                    config=types.GenerateContentConfig(
+                        system_instruction=self._system_prompt,
+                        response_mime_type="application/json",
+                        response_schema=_RiskList,
+                        temperature=0.0,
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -210,39 +174,32 @@ class RiskExtractor:
                 )
                 if attempt < self._max_retries:
                     backoff = 2**attempt
-                    logger.info("재시도 대기 %ds...", backoff)
                     await asyncio.sleep(backoff)
                     continue
                 return ExtractionResult(model=self._model)
 
             risks: list[ExtractedRisk] = []
             parse_failed = False
-            message = response.choices[0].message
 
-            if message.tool_calls:
-                for tool_call in message.tool_calls:
-                    try:
-                        args = json.loads(tool_call.function.arguments)
-                        for r in args.get("risks", []):
-                            risks.append(
-                                ExtractedRisk(
-                                    tag=r["tag"],
-                                    supporting_quote=r["supporting_quote"],
-                                )
-                            )
-                    except (json.JSONDecodeError, KeyError):
-                        logger.warning(
-                            "tool call 파싱 실패: %s",
-                            tool_call.function.arguments[:200],
+            try:
+                parsed = json.loads(response.text)
+                for r in parsed.get("risks", []):
+                    risks.append(
+                        ExtractedRisk(
+                            tag=r["tag"],
+                            supporting_quote=r["supporting_quote"],
                         )
-                        parse_failed = True
+                    )
+            except (json.JSONDecodeError, KeyError, TypeError):
+                logger.warning("응답 파싱 실패: %s", (response.text or "")[:200])
+                parse_failed = True
 
             usage = {}
-            if response.usage:
+            if response.usage_metadata:
                 usage = {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
+                    "prompt_tokens": response.usage_metadata.prompt_token_count or 0,
+                    "completion_tokens": response.usage_metadata.candidates_token_count or 0,
+                    "total_tokens": response.usage_metadata.total_token_count or 0,
                 }
 
             if risks:

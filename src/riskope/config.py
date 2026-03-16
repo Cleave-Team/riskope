@@ -22,7 +22,8 @@ class Settings(BaseSettings):
 
     # --- API Keys ---
     dart_api_key: str = Field(default="", description="DART Open API 키")
-    openai_api_key: str = Field(default="", description="OpenAI API 키")
+    openai_api_key: str = Field(default="", description="OpenAI API 키 (임베딩)")
+    gemini_api_key: str = Field(default="", description="Google Gemini API 키 (LLM)")
     massive_api_key: str = Field(default="", description="Massive.com SEC API 키")
 
     # --- Database ---
@@ -45,14 +46,14 @@ class Settings(BaseSettings):
     s3_access_key: str = Field(default="", description="AWS access key (빈 값이면 IAM role)")
     s3_secret_key: str = Field(default="", description="AWS secret key")
 
-    # --- LLM 설정 ---
+    # --- LLM 설정 (Gemini) ---
     extraction_model: str = Field(
-        default="gpt-4o",
-        description="Stage 1 리스크 추출에 사용할 모델",
+        default="gemini-2.5-flash",
+        description="Stage 1 리스크 추출에 사용할 Gemini 모델",
     )
     judge_model: str = Field(
-        default="gpt-4o-mini",
-        description="Stage 3 LLM-as-Judge에 사용할 모델",
+        default="gemini-2.5-flash",
+        description="Stage 3 LLM-as-Judge에 사용할 Gemini 모델",
     )
 
     # --- 임베딩 설정 ---

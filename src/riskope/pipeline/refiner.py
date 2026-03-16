@@ -12,10 +12,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections import Counter, defaultdict
+from collections import Counter
 
 import numpy as np
+from google import genai
+from google.genai import types
 from openai import AsyncOpenAI
+from pydantic import BaseModel, Field
 
 from riskope.models import (
     JudgeResult,
@@ -38,30 +41,6 @@ _FAILURE_ANALYSIS_SYSTEM_PROMPT = """\
 각 패턴에 대해 간결한 설명과 대략적인 비율(%)을 제공하세요.
 """
 
-_FAILURE_ANALYSIS_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "report_failure_patterns",
-            "description": "식별된 실패 패턴 목록을 보고합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "patterns": {
-                        "type": "array",
-                        "description": "식별된 실패 패턴 목록",
-                        "items": {
-                            "type": "string",
-                            "description": "실패 패턴 설명 (예: 'Geographic scope confusion - 30%')",
-                        },
-                    },
-                },
-                "required": ["patterns"],
-            },
-        },
-    }
-]
-
 _DESCRIPTION_GEN_SYSTEM_PROMPT = """\
 당신은 리스크 택소노미 카테고리의 description을 개선하는 전문가입니다.
 
@@ -70,43 +49,27 @@ _DESCRIPTION_GEN_SYSTEM_PROMPT = """\
 Description은 영문으로 작성하세요.
 """
 
-_DESCRIPTION_GEN_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "propose_descriptions",
-            "description": "개선된 카테고리 description 후보들을 제안합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "candidates": {
-                        "type": "array",
-                        "description": "후보 description 목록 (3-5개)",
-                        "items": {
-                            "type": "string",
-                            "description": "개선된 description (영문)",
-                        },
-                    },
-                },
-                "required": ["candidates"],
-            },
-        },
-    }
-]
+
+class _FailurePatterns(BaseModel):
+    patterns: list[str] = Field(description="식별된 실패 패턴 목록")
+
+
+class _DescriptionCandidates(BaseModel):
+    candidates: list[str] = Field(description="후보 description 목록 (3-5개)")
 
 
 class TaxonomyRefiner:
-    """Stage 4: 저품질 매핑 분석 → 택소노미 description 자율 개선."""
-
     def __init__(
         self,
-        client: AsyncOpenAI,
-        analysis_model: str = "gpt-4o",
+        gemini_client: genai.Client,
+        openai_client: AsyncOpenAI,
+        analysis_model: str = "gemini-2.5-flash",
         embedding_model: str = "text-embedding-3-small",
         embedding_dimensions: int = 1536,
         max_retries: int = 3,
     ) -> None:
-        self._client = client
+        self._gemini = gemini_client
+        self._openai = openai_client
         self._analysis_model = analysis_model
         self._embedding_model = embedding_model
         self._embedding_dimensions = embedding_dimensions
@@ -117,16 +80,10 @@ class TaxonomyRefiner:
         all_judge_results: list[JudgeResult],
         top_n: int = 5,
     ) -> list[tuple[str, int]]:
-        """Step A: Judge 결과에서 저품질 매핑이 많은 카테고리 식별.
-
-        Returns:
-            (category_key, low_quality_count) 튜플 목록, count 내림차순.
-        """
         low_quality_counts: Counter[str] = Counter()
         for jr in all_judge_results:
             if jr.quality_score < 4:
                 low_quality_counts[jr.mapping.category.key] += 1
-
         return low_quality_counts.most_common(top_n)
 
     def _collect_low_quality_mappings(
@@ -134,7 +91,6 @@ class TaxonomyRefiner:
         all_judge_results: list[JudgeResult],
         category_key: str,
     ) -> list[LowQualityMapping]:
-        """특정 카테고리의 저품질 매핑 수집."""
         results: list[LowQualityMapping] = []
         for jr in all_judge_results:
             if jr.mapping.category.key == category_key and jr.quality_score < 4:
@@ -152,7 +108,6 @@ class TaxonomyRefiner:
         all_judge_results: list[JudgeResult],
         category_key: str,
     ) -> list[TaxonomyMapping]:
-        """특정 카테고리의 고품질 매핑 수집 (score >= 4)."""
         return [
             jr.mapping for jr in all_judge_results if jr.mapping.category.key == category_key and jr.quality_score >= 4
         ]
@@ -162,7 +117,6 @@ class TaxonomyRefiner:
         category_description: str,
         low_quality_mappings: list[LowQualityMapping],
     ) -> list[str]:
-        """Step B: LLM으로 실패 패턴 분석."""
         mapping_details = "\n\n".join(
             f"--- 매핑 {i + 1} (점수: {lqm.quality_score}) ---\n"
             f"인용문: {lqm.mapping.extracted_risk.supporting_quote}\n"
@@ -177,25 +131,20 @@ class TaxonomyRefiner:
 
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._client.chat.completions.create(
+                response = await self._gemini.aio.models.generate_content(
                     model=self._analysis_model,
-                    messages=[
-                        {"role": "system", "content": _FAILURE_ANALYSIS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    tools=_FAILURE_ANALYSIS_TOOLS,
-                    tool_choice={
-                        "type": "function",
-                        "function": {"name": "report_failure_patterns"},
-                    },
-                    temperature=0.0,
+                    contents=[user_message],
+                    config=types.GenerateContentConfig(
+                        system_instruction=_FAILURE_ANALYSIS_SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=_FailurePatterns,
+                        temperature=0.0,
+                    ),
                 )
-                message = response.choices[0].message
-                if message.tool_calls:
-                    args = json.loads(message.tool_calls[0].function.arguments)
-                    patterns = args.get("patterns", [])
-                    if patterns:
-                        return patterns
+                parsed = json.loads(response.text)
+                patterns = parsed.get("patterns", [])
+                if patterns:
+                    return patterns
             except Exception:
                 logger.exception(
                     "실패 패턴 분석 호출 실패 (attempt %d/%d)",
@@ -217,7 +166,6 @@ class TaxonomyRefiner:
         original_description: str,
         failure_patterns: list[str],
     ) -> list[str]:
-        """Step C: 실패 패턴 기반 후보 description 생성."""
         patterns_text = "\n".join(f"- {p}" for p in failure_patterns)
         user_message = (
             f"## 원래 Description\n{original_description}\n\n"
@@ -227,25 +175,20 @@ class TaxonomyRefiner:
 
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._client.chat.completions.create(
+                response = await self._gemini.aio.models.generate_content(
                     model=self._analysis_model,
-                    messages=[
-                        {"role": "system", "content": _DESCRIPTION_GEN_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    tools=_DESCRIPTION_GEN_TOOLS,
-                    tool_choice={
-                        "type": "function",
-                        "function": {"name": "propose_descriptions"},
-                    },
-                    temperature=0.7,
+                    contents=[user_message],
+                    config=types.GenerateContentConfig(
+                        system_instruction=_DESCRIPTION_GEN_SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=_DescriptionCandidates,
+                        temperature=0.7,
+                    ),
                 )
-                message = response.choices[0].message
-                if message.tool_calls:
-                    args = json.loads(message.tool_calls[0].function.arguments)
-                    candidates = args.get("candidates", [])
-                    if candidates:
-                        return candidates
+                parsed = json.loads(response.text)
+                candidates = parsed.get("candidates", [])
+                if candidates:
+                    return candidates
             except Exception:
                 logger.exception(
                     "후보 description 생성 실패 (attempt %d/%d)",
@@ -267,7 +210,6 @@ class TaxonomyRefiner:
         high_quality_mappings: list[TaxonomyMapping],
         low_quality_mappings: list[LowQualityMapping],
     ) -> list[RefinementTestCase]:
-        """Step D-1: 테스트 케이스 구성."""
         test_cases: list[RefinementTestCase] = []
 
         for m in high_quality_mappings:
@@ -292,7 +234,6 @@ class TaxonomyRefiner:
         return test_cases
 
     async def _embed_texts(self, texts: list[str]) -> np.ndarray:
-        """텍스트 목록을 임베딩하여 numpy 배열로 반환."""
         if not texts:
             return np.array([])
 
@@ -302,7 +243,7 @@ class TaxonomyRefiner:
 
         for i in range(0, len(prefixed), batch_size):
             batch = prefixed[i : i + batch_size]
-            response = await self._client.embeddings.create(
+            response = await self._openai.embeddings.create(
                 model=self._embedding_model,
                 input=batch,
                 dimensions=self._embedding_dimensions,
@@ -317,10 +258,6 @@ class TaxonomyRefiner:
         test_case_embeddings: np.ndarray,
         test_cases: list[RefinementTestCase],
     ) -> float:
-        """Step D-5: description과 테스트 케이스 간 분리도 계산.
-
-        separation = avg(tp_similarities) - avg(fp_similarities)
-        """
         if len(test_cases) == 0 or description_embedding.size == 0:
             return 0.0
 
@@ -343,7 +280,6 @@ class TaxonomyRefiner:
         test_cases: list[RefinementTestCase],
         test_case_embeddings: np.ndarray,
     ) -> float:
-        """단일 후보 description의 분리도 평가."""
         desc_emb = await self._embed_texts([candidate_description])
         if desc_emb.size == 0:
             return 0.0
@@ -354,7 +290,6 @@ class TaxonomyRefiner:
         category_key: str,
         all_judge_results: list[JudgeResult],
     ) -> RefinementResult | None:
-        """단일 카테고리에 대한 전체 개선 파이프라인 실행."""
         low_quality = self._collect_low_quality_mappings(all_judge_results, category_key)
         high_quality = self._collect_high_quality_mappings(all_judge_results, category_key)
 

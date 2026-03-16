@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -11,11 +11,11 @@ from riskope.pipeline.mapper import TaxonomyMapper, _TASK_INSTRUCTIONS
 
 class TestExtractorLocale:
     def test_default_locale_is_kr(self):
-        extractor = RiskExtractor(client=AsyncMock(), locale="kr")
+        extractor = RiskExtractor(gemini_client=MagicMock(), locale="kr")
         assert extractor._system_prompt == _SYSTEM_PROMPTS["kr"]
 
     def test_en_locale_uses_english_prompt(self):
-        extractor = RiskExtractor(client=AsyncMock(), locale="en")
+        extractor = RiskExtractor(gemini_client=MagicMock(), locale="en")
         assert extractor._system_prompt == _SYSTEM_PROMPTS["en"]
         assert "10-K annual report" in extractor._system_prompt
 
@@ -121,16 +121,16 @@ class TestMapperLocale:
 
 class TestJudgeLocale:
     def test_default_locale_is_kr(self):
-        judge = MappingJudge(client=AsyncMock(), locale="kr")
+        judge = MappingJudge(gemini_client=MagicMock(), locale="kr")
         assert judge._system_prompt == _JUDGE_SYSTEM_PROMPTS["kr"]
 
     def test_en_locale_uses_english_prompt(self):
-        judge = MappingJudge(client=AsyncMock(), locale="en")
+        judge = MappingJudge(gemini_client=MagicMock(), locale="en")
         assert judge._system_prompt == _JUDGE_SYSTEM_PROMPTS["en"]
         assert "Excellent fit" in judge._system_prompt
 
     def test_en_user_message_format(self):
-        judge = MappingJudge(client=AsyncMock(), locale="en")
+        judge = MappingJudge(gemini_client=MagicMock(), locale="en")
         mapping = TaxonomyMapping(
             extracted_risk=ExtractedRisk(tag="interest rate risk", supporting_quote="Rising rates..."),
             category=TaxonomyCategory(
@@ -148,7 +148,7 @@ class TestJudgeLocale:
         assert "임베딩 유사도" not in msg
 
     def test_kr_user_message_format(self):
-        judge = MappingJudge(client=AsyncMock(), locale="kr")
+        judge = MappingJudge(gemini_client=MagicMock(), locale="kr")
         mapping = TaxonomyMapping(
             extracted_risk=ExtractedRisk(tag="금리 리스크", supporting_quote="금리가 상승하여..."),
             category=TaxonomyCategory(

@@ -14,7 +14,9 @@ import asyncio
 import json
 import logging
 
-from openai import AsyncOpenAI
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
 
 from riskope.models import JudgeResult, QualityScore, TaxonomyMapping
 
@@ -58,44 +60,22 @@ You must provide both a numerical score and a concise one-sentence reasoning.
 
 _JUDGE_SYSTEM_PROMPTS = {"kr": _JUDGE_SYSTEM_PROMPT_KR, "en": _JUDGE_SYSTEM_PROMPT_EN}
 
-_JUDGE_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "evaluate_mapping",
-            "description": "리스크-택소노미 매핑의 품질을 평가합니다.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "quality_score": {
-                        "type": "integer",
-                        "description": "품질 점수 (1-5)",
-                        "enum": [1, 2, 3, 4, 5],
-                    },
-                    "reasoning": {
-                        "type": "string",
-                        "description": "점수 판단 근거 (한 문장)",
-                    },
-                },
-                "required": ["quality_score", "reasoning"],
-            },
-        },
-    }
-]
+
+class _JudgeEvaluation(BaseModel):
+    quality_score: int = Field(description="품질 점수 (1-5)", ge=1, le=5)
+    reasoning: str = Field(description="점수 판단 근거 (한 문장)")
 
 
 class MappingJudge:
-    """Stage 3: LLM-as-Judge로 매핑 품질 검증."""
-
     def __init__(
         self,
-        client: AsyncOpenAI,
-        model: str = "gpt-4o-mini",
+        gemini_client: genai.Client,
+        model: str = "gemini-2.5-flash",
         threshold: int = 4,
         max_concurrent: int = 10,
         locale: str = "kr",
     ) -> None:
-        self._client = client
+        self._client = gemini_client
         self._model = model
         self._threshold = threshold
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -104,14 +84,6 @@ class MappingJudge:
         self.total_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     async def evaluate_all(self, mappings: list[TaxonomyMapping]) -> list[JudgeResult]:
-        """모든 매핑을 동시 평가.
-
-        Args:
-            mappings: Stage 2에서 생성된 매핑 목록.
-
-        Returns:
-            모든 매핑에 대한 평가 결과 (필터링 전).
-        """
         tasks = [self._evaluate_one(m) for m in mappings]
         results = await asyncio.gather(*tasks)
         valid_results = [r for r in results if r is not None]
@@ -127,46 +99,40 @@ class MappingJudge:
         return valid_results
 
     def filter_passed(self, results: list[JudgeResult]) -> list[JudgeResult]:
-        """임계값 이상 점수만 필터링."""
         return [r for r in results if r.quality_score >= self._threshold]
 
     async def _evaluate_one(self, mapping: TaxonomyMapping) -> JudgeResult | None:
-        """단일 매핑 평가."""
         async with self._semaphore:
             user_message = self._build_user_message(mapping)
 
             try:
-                response = await self._client.chat.completions.create(
+                response = await self._client.aio.models.generate_content(
                     model=self._model,
-                    messages=[
-                        {"role": "system", "content": self._system_prompt},
-                        {"role": "user", "content": user_message},
-                    ],
-                    tools=_JUDGE_TOOLS,
-                    tool_choice={"type": "function", "function": {"name": "evaluate_mapping"}},
-                    temperature=0.0,
+                    contents=[user_message],
+                    config=types.GenerateContentConfig(
+                        system_instruction=self._system_prompt,
+                        response_mime_type="application/json",
+                        response_schema=_JudgeEvaluation,
+                        temperature=0.0,
+                    ),
                 )
             except Exception:
                 logger.exception("Judge 호출 실패")
                 return None
 
-            if response.usage:
-                self.total_usage["prompt_tokens"] += response.usage.prompt_tokens
-                self.total_usage["completion_tokens"] += response.usage.completion_tokens
-                self.total_usage["total_tokens"] += response.usage.total_tokens
-
-            message = response.choices[0].message
-            if not message.tool_calls:
-                return None
+            if response.usage_metadata:
+                self.total_usage["prompt_tokens"] += response.usage_metadata.prompt_token_count or 0
+                self.total_usage["completion_tokens"] += response.usage_metadata.candidates_token_count or 0
+                self.total_usage["total_tokens"] += response.usage_metadata.total_token_count or 0
 
             try:
-                args = json.loads(message.tool_calls[0].function.arguments)
+                parsed = json.loads(response.text)
                 return JudgeResult(
                     mapping=mapping,
-                    quality_score=QualityScore(args["quality_score"]),
-                    reasoning=args["reasoning"],
+                    quality_score=QualityScore(parsed["quality_score"]),
+                    reasoning=parsed["reasoning"],
                 )
-            except (json.JSONDecodeError, KeyError, ValueError):
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                 logger.warning("Judge 응답 파싱 실패")
                 return None
 
