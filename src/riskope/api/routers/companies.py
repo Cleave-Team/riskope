@@ -145,6 +145,7 @@ async def analyze_company(
 
 
 async def _run_analysis_task(job_id: str, corp_code: str, dart_report: dict):
+    import traceback
     import uuid
 
     from riskope.api.db.session import _get_session_factory
@@ -152,24 +153,31 @@ async def _run_analysis_task(job_id: str, corp_code: str, dart_report: dict):
     logger.info(
         "Background 분석 시작: job_id=%s, corp_code=%s, report=%s", job_id, corp_code, dart_report.get("report_nm")
     )
-    settings = get_settings()
-    async with _get_session_factory()() as db:
-        job = await db.get(AnalysisJob, uuid.UUID(job_id))
-        if not job:
-            logger.error("Job not found: %s", job_id)
-            return
 
-        company = await db.execute(select(Company).where(Company.corp_code == corp_code))
-        company_obj = company.scalar_one()
+    try:
+        settings = get_settings()
+        async with _get_session_factory()() as db:
+            job = await db.get(AnalysisJob, uuid.UUID(job_id))
+            if not job:
+                logger.error("Job not found: %s", job_id)
+                return
 
-        try:
-            await run_analysis(db, job, company_obj, dart_report, settings)
-        except Exception as e:
-            job.status = "failed"
-            job.error_message = str(e)
-            job.completed_at = datetime.now()
-            await db.commit()
-            logger.exception("Analysis failed: corp_code=%s", corp_code)
+            company = await db.execute(select(Company).where(Company.corp_code == corp_code))
+            company_obj = company.scalar_one()
+
+            try:
+                await run_analysis(db, job, company_obj, dart_report, settings)
+            except Exception as e:
+                logger.exception("Analysis failed: corp_code=%s", corp_code)
+                await db.rollback()
+                job = await db.get(AnalysisJob, uuid.UUID(job_id))
+                if job:
+                    job.status = "failed"
+                    job.error_message = str(e)[:500]
+                    job.completed_at = datetime.now()
+                    await db.commit()
+    except Exception:
+        logger.error("Background task 최상위 에러: %s\n%s", job_id, traceback.format_exc())
 
 
 @router.get("/{corp_code}/risk-factors")
