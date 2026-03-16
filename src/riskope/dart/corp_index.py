@@ -99,17 +99,28 @@ class DartCorpIndex:
             ascii_folding=False,
         )
 
-    async def _embed_batch(self, texts: list[str], batch_size: int = 100) -> list[list[float]]:
-        """텍스트 배치를 임베딩. OpenAI API 배치 제한 고려."""
+    async def _embed_batch(
+        self, texts: list[str], batch_size: int = 100, max_concurrent: int = 10,
+    ) -> list[list[float]]:
+        """텍스트 배치를 임베딩. 배치 간 병렬 호출로 처리."""
+        import asyncio
+
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _call(batch: list[str]) -> list[list[float]]:
+            async with semaphore:
+                response = await self._client.embeddings.create(
+                    model=self._model,
+                    input=batch,
+                    dimensions=self._dimensions,
+                )
+                return [item.embedding for item in response.data]
+
+        batches = [texts[i : i + batch_size] for i in range(0, len(texts), batch_size)]
+        results = await asyncio.gather(*[_call(b) for b in batches])
+
         all_embeddings: list[list[float]] = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            response = await self._client.embeddings.create(
-                model=self._model,
-                input=batch,
-                dimensions=self._dimensions,
-            )
-            batch_embeddings = [item.embedding for item in response.data]
+        for batch_embeddings in results:
             all_embeddings.extend(batch_embeddings)
         return all_embeddings
 
