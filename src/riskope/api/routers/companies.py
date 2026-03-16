@@ -109,19 +109,26 @@ async def analyze_company(
                 filing_rcept_no=cached.rcept_no,
             )
 
-    existing_job = await db.execute(
+    existing_jobs = await db.execute(
         select(AnalysisJob).where(
             AnalysisJob.company_id == company.id,
             AnalysisJob.status.in_(["queued", "running"]),
         )
     )
-    if existing := existing_job.scalar_one_or_none():
-        return AnalyzeResponse(
-            status="accepted",
-            job_id=str(existing.id),
-            cache_hit=False,
-            filing_rcept_no=dart_latest.get("rcept_no", ""),
-        )
+    for stuck_job in existing_jobs.scalars().all():
+        if body.force_refresh:
+            logger.info("Stuck job 삭제: %s (status=%s)", stuck_job.id, stuck_job.status)
+            await db.delete(stuck_job)
+        else:
+            return AnalyzeResponse(
+                status="accepted",
+                job_id=str(stuck_job.id),
+                cache_hit=False,
+                filing_rcept_no=dart_latest.get("rcept_no", ""),
+            )
+
+    if body.force_refresh:
+        await db.flush()
 
     job = AnalysisJob(company_id=company.id)
     db.add(job)
