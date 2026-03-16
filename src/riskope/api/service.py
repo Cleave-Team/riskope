@@ -121,6 +121,13 @@ async def run_analysis(
     rcept_dt = date(int(rcept_dt_str[:4]), int(rcept_dt_str[4:6]), int(rcept_dt_str[6:8]))
     logger.info("분석 시작: %s (%s), report_year=%d, rcept_no=%s", company.corp_name, report_nm, report_year, rcept_no)
 
+    existing = await db.execute(select(Filing).where(Filing.rcept_no == rcept_no))
+    old_filing = existing.scalar_one_or_none()
+    if old_filing:
+        logger.info("기존 filing 삭제 (status=%s): rcept_no=%s", old_filing.status, rcept_no)
+        await db.delete(old_filing)
+        await db.flush()
+
     filing = Filing(
         company_id=company.id,
         rcept_no=rcept_no,
