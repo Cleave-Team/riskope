@@ -26,8 +26,7 @@ class Base(DeclarativeBase):
 class Company(Base):
     __tablename__ = "companies"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    corp_code: Mapped[str] = mapped_column(String(8), unique=True, nullable=False)
+    corp_code: Mapped[str] = mapped_column(String(8), primary_key=True)
     corp_name: Mapped[str] = mapped_column(String(200), nullable=False)
     stock_code: Mapped[str | None] = mapped_column(String(6))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -38,12 +37,12 @@ class Company(Base):
 class Filing(Base):
     __tablename__ = "filings"
     __table_args__ = (
-        Index("idx_filings_lookup", "company_id", "report_year"),
+        Index("idx_filings_lookup", "corp_code", "report_year"),
         CheckConstraint("status IN ('pending', 'processing', 'completed', 'failed')", name="valid_status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    corp_code: Mapped[str] = mapped_column(ForeignKey("companies.corp_code"), nullable=False)
     rcept_no: Mapped[str] = mapped_column(String(14), unique=True, nullable=False)
     rcept_dt: Mapped[datetime] = mapped_column(Date, nullable=False)
     report_year: Mapped[int] = mapped_column(SmallInteger, nullable=False)
@@ -87,7 +86,7 @@ class AnalysisJob(Base):
     __tablename__ = "analysis_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    corp_code: Mapped[str] = mapped_column(ForeignKey("companies.corp_code"), nullable=False)
     filing_id: Mapped[int | None] = mapped_column(ForeignKey("filings.id"))
     status: Mapped[str] = mapped_column(String(20), default="queued")
     progress: Mapped[int] = mapped_column(SmallInteger, default=0)

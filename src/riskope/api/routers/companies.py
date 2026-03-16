@@ -95,8 +95,8 @@ async def analyze_company(
     report_year = body.report_year or extract_report_year(report_nm, rcept_dt_str)
 
     if not body.force_refresh:
-        cached = await find_cached_filing(db, company.id, report_year)
-        if cached and await is_cache_fresh(db, company.id, dart_latest):
+        cached = await find_cached_filing(db, company.corp_code, report_year)
+        if cached and await is_cache_fresh(db, company.corp_code, dart_latest):
             return AnalyzeResponse(
                 status="completed",
                 result=RiskProfileResponse(
@@ -111,7 +111,7 @@ async def analyze_company(
 
     existing_jobs = await db.execute(
         select(AnalysisJob).where(
-            AnalysisJob.company_id == company.id,
+            AnalysisJob.corp_code == company.corp_code,
             AnalysisJob.status.in_(["queued", "running"]),
         )
     )
@@ -130,7 +130,7 @@ async def analyze_company(
     if body.force_refresh:
         await db.flush()
 
-    job = AnalysisJob(company_id=company.id)
+    job = AnalysisJob(corp_code=company.corp_code)
     db.add(job)
     await db.commit()
 
@@ -191,7 +191,7 @@ async def get_risk_factors(
     if not company_obj:
         raise HTTPException(status_code=404, detail=f"기업 {corp_code}을 찾을 수 없습니다")
 
-    filings = await get_filings_for_company(db, company_obj.id, years=years)
+    filings = await get_filings_for_company(db, company_obj.corp_code, years=years)
 
     filing_results = [
         FilingWithRiskFactors(
@@ -222,7 +222,7 @@ async def get_risk_factors_by_year(
     if not company_obj:
         raise HTTPException(status_code=404, detail=f"기업 {corp_code}을 찾을 수 없습니다")
 
-    filing = await find_cached_filing(db, company_obj.id, report_year)
+    filing = await find_cached_filing(db, company_obj.corp_code, report_year)
     if not filing:
         raise HTTPException(status_code=404, detail=f"{report_year}년 분석 결과가 없습니다")
 
@@ -244,7 +244,7 @@ async def list_filings(
     if not company_obj:
         raise HTTPException(status_code=404, detail=f"기업 {corp_code}을 찾을 수 없습니다")
 
-    filings = await get_filings_for_company(db, company_obj.id)
+    filings = await get_filings_for_company(db, company_obj.corp_code)
     return [_filing_to_response(f) for f in filings]
 
 
@@ -259,7 +259,7 @@ async def get_company(
         raise HTTPException(status_code=404, detail=f"기업 {corp_code}을 찾을 수 없습니다")
 
     filing_count = await db.execute(
-        select(Filing).where(Filing.company_id == company_obj.id, Filing.status == "completed")
+        select(Filing).where(Filing.corp_code == company_obj.corp_code, Filing.status == "completed")
     )
     filings = list(filing_count.scalars().all())
     latest_year = max((f.report_year for f in filings), default=None)

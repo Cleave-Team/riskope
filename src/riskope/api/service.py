@@ -47,11 +47,11 @@ async def get_or_create_company(db: AsyncSession, corp_code: str, corp_name: str
     return company
 
 
-async def find_cached_filing(db: AsyncSession, company_id: int, report_year: int) -> Filing | None:
+async def find_cached_filing(db: AsyncSession, corp_code: str, report_year: int) -> Filing | None:
     result = await db.execute(
         select(Filing)
         .options(selectinload(Filing.risk_factors))
-        .where(Filing.company_id == company_id, Filing.report_year == report_year, Filing.status == "completed")
+        .where(Filing.corp_code == corp_code, Filing.report_year == report_year, Filing.status == "completed")
         .order_by(Filing.rcept_dt.desc())
         .limit(1)
     )
@@ -82,19 +82,19 @@ async def check_latest_filing_on_dart(dart: DartClient, corp_code: str) -> dict 
     return latest
 
 
-async def is_cache_fresh(db: AsyncSession, company_id: int, dart_latest: dict) -> bool:
+async def is_cache_fresh(db: AsyncSession, corp_code: str, dart_latest: dict) -> bool:
     rcept_no = dart_latest.get("rcept_no", "")
     result = await db.execute(
-        select(Filing).where(Filing.company_id == company_id, Filing.rcept_no == rcept_no, Filing.status == "completed")
+        select(Filing).where(Filing.corp_code == corp_code, Filing.rcept_no == rcept_no, Filing.status == "completed")
     )
     return result.scalar_one_or_none() is not None
 
 
-async def get_filings_for_company(db: AsyncSession, company_id: int, years: int | None = None) -> list[Filing]:
+async def get_filings_for_company(db: AsyncSession, corp_code: str, years: int | None = None) -> list[Filing]:
     stmt = (
         select(Filing)
         .options(selectinload(Filing.risk_factors))
-        .where(Filing.company_id == company_id, Filing.status == "completed")
+        .where(Filing.corp_code == corp_code, Filing.status == "completed")
         .order_by(Filing.report_year.desc())
     )
     if years:
@@ -132,7 +132,7 @@ async def run_analysis(
         await db.flush()
 
     filing = Filing(
-        company_id=company.id,
+        corp_code=company.corp_code,
         rcept_no=rcept_no,
         rcept_dt=rcept_dt,
         report_year=report_year,
