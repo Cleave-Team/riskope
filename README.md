@@ -14,6 +14,37 @@ DART/SEC 공시 기반 택소노미 정렬 리스크 팩터 추출 엔진.
 | 임베딩 | EN+KR description 결합 | EN description만 (논문 원문) |
 | 사용 방식 | CLI 또는 API 서버 | CLI |
 
+## DART 데이터 소스
+
+DART 사업보고서에서 리스크 관련 섹션을 추출하는 흐름입니다. 사업보고서는 `pblntf_detail_ty=A001` (사업보고서)로 조회하며, 2-step viewer 방식으로 본문을 가져옵니다.
+
+### 섹션 추출 전략
+
+DART viewer의 `main.do` 페이지에서 JavaScript tree node를 파싱하여 섹션별로 직접 fetch합니다. 한국 사업보고서는 미국 10-K의 Item 1A처럼 리스크가 단일 섹션에 집중되지 않고 여러 곳에 분산되어 있으므로, 다음 우선순위로 섹션을 선택합니다:
+
+| 우선순위 | 섹션명 | 설명 |
+|---------|--------|------|
+| 1순위 | **사업의 위험** | 전용 리스크 섹션 (존재하면 이것만 사용) |
+| 2순위 | **사업의 내용** + **위험관리 및 파생거래** | 1순위가 없으면 두 섹션을 합쳐서 사용 |
+| fallback | 전문 문서 | tree node 파싱 실패 시 전문에서 regex로 '사업의 위험' 구간 추출 |
+
+### Fetch 흐름
+
+```
+main.do?rcpNo={접수번호}
+  │
+  ├─ JavaScript tree node 파싱 (섹션 목록 추출)
+  │     ├─ '사업의 위험' 노드 발견 → viewer.do로 해당 섹션만 fetch
+  │     └─ 없으면 → '사업의 내용' + '위험관리 및 파생거래' 각각 fetch → 합침
+  │
+  └─ tree node 없으면 → viewDoc fallback (전문 HTML)
+       └─ regex로 '사업의 위험' 구간 추출
+  │
+  HTML → BeautifulSoup → markdownify → 클린 markdown 텍스트
+```
+
+추출된 markdown 텍스트는 TextChunker로 분할된 후 3-Stage 파이프라인에 입력됩니다.
+
 ## 3-Stage 파이프라인
 
 ```
