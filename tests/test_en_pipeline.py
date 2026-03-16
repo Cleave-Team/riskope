@@ -17,13 +17,13 @@ class TestExtractorLocale:
     def test_en_locale_uses_english_prompt(self):
         extractor = RiskExtractor(client=AsyncMock(), locale="en")
         assert extractor._system_prompt == _SYSTEM_PROMPTS["en"]
-        assert "Item 1A Risk Factors" in extractor._system_prompt
+        assert "10-K annual report" in extractor._system_prompt
 
     def test_kr_prompt_contains_korean(self):
         assert "사업보고서" in _SYSTEM_PROMPTS["kr"]
 
     def test_en_prompt_contains_english(self):
-        assert "10-K annual report" in _SYSTEM_PROMPTS["en"]
+        assert "risk analysis expert" in _SYSTEM_PROMPTS["en"]
 
 
 class TestMapperLocale:
