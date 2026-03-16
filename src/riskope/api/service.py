@@ -125,6 +125,9 @@ async def run_analysis(
     old_filing = existing.scalar_one_or_none()
     if old_filing:
         logger.info("기존 filing 삭제 (status=%s): rcept_no=%s", old_filing.status, rcept_no)
+        old_jobs = await db.execute(select(AnalysisJob).where(AnalysisJob.filing_id == old_filing.id))
+        for oj in old_jobs.scalars().all():
+            await db.delete(oj)
         await db.delete(old_filing)
         await db.flush()
 
