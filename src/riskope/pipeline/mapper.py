@@ -28,7 +28,8 @@ _TASK_INSTRUCTION_EN = "Classify risk factor text from an annual report into the
 _TASK_INSTRUCTIONS = {"kr": _TASK_INSTRUCTION_KR, "en": _TASK_INSTRUCTION_EN}
 
 # 기본 캐시 디렉토리
-_DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
+_THIS_DIR = Path(__file__).resolve().parent.parent.parent.parent
+_DEFAULT_DATA_DIR = _THIS_DIR / "data" if (_THIS_DIR / "data").exists() else Path("/app/data")
 
 
 class TaxonomyMapper:
