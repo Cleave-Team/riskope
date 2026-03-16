@@ -85,6 +85,20 @@ class DartCorpIndex:
         db = self._open_db()
         return db.open_table(_TABLE_NAME)
 
+    @staticmethod
+    def _create_fts_index(table) -> None:
+        """한글 부분 매칭을 지원하는 ngram FTS 인덱스 생성."""
+        table.create_fts_index(
+            "corp_name",
+            replace=True,
+            base_tokenizer="ngram",
+            ngram_min_length=1,
+            ngram_max_length=3,
+            stem=False,
+            remove_stop_words=False,
+            ascii_folding=False,
+        )
+
     async def _embed_batch(self, texts: list[str], batch_size: int = 100) -> list[list[float]]:
         """텍스트 배치를 임베딩. OpenAI API 배치 제한 고려."""
         all_embeddings: list[list[float]] = []
@@ -198,7 +212,7 @@ class DartCorpIndex:
         # FTS 인덱스 생성
         try:
             local_table = local_db.open_table(_TABLE_NAME)
-            local_table.create_fts_index("corp_name", replace=True)
+            self._create_fts_index(local_table)
         except Exception:
             logger.warning("FTS 인덱스 생성 실패", exc_info=True)
 
@@ -294,7 +308,7 @@ class DartCorpIndex:
         # FTS 인덱스 생성
         try:
             table = db.open_table(_TABLE_NAME)
-            table.create_fts_index("corp_name", replace=True)
+            self._create_fts_index(table)
             logger.info("FTS 인덱스 생성 완료")
         except Exception:
             logger.warning("FTS 인덱스 생성 실패 (tantivy 미설치?)", exc_info=True)
@@ -379,23 +393,9 @@ class DartCorpIndex:
         sem_results = await self.search_semantic(query, limit=limit * 2)
         return self._rrf_merge(fts_results, sem_results, limit)
 
-    async def search(self, query: str, mode: str = "auto", limit: int = 10) -> list[dict]:
-        """통합 검색. mode: auto, exact, fts, semantic, hybrid."""
-        if mode == "auto":
-            stripped = query.strip()
-            if stripped.isdigit() and len(stripped) == 8:
-                return self.search_exact(corp_code=stripped)
-            if stripped.isdigit() and len(stripped) == 6:
-                return self.search_exact(stock_code=stripped)
-            return await self.search_hybrid(stripped, limit=limit)
-        elif mode == "exact":
-            stripped = query.strip()
-            if len(stripped) == 8 and stripped.isdigit():
-                return self.search_exact(corp_code=stripped)
-            if len(stripped) == 6 and stripped.isdigit():
-                return self.search_exact(stock_code=stripped)
-            return self.search_exact(corp_code=stripped)
-        elif mode == "fts":
+    async def search(self, query: str, mode: str = "hybrid", limit: int = 10) -> list[dict]:
+        """통합 검색. mode: fts, semantic, hybrid."""
+        if mode == "fts":
             return self.search_fts(query, limit=limit)
         elif mode == "semantic":
             return await self.search_semantic(query, limit=limit)

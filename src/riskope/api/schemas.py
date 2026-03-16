@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from enum import Enum
 from typing import Literal
 from uuid import UUID
 
@@ -92,6 +93,14 @@ class TaxonomyCategoryResponse(BaseModel):
 # --- Corp Search ---
 
 
+class CorpSearchMode(str, Enum):
+    """기업 검색 모드."""
+
+    fts = "fts"
+    semantic = "semantic"
+    hybrid = "hybrid"
+
+
 class CorpSearchResult(BaseModel):
     corp_code: str
     corp_name: str
@@ -103,7 +112,7 @@ class CorpSearchResult(BaseModel):
 
 class CorpSearchResponse(BaseModel):
     query: str
-    mode: str
+    mode: CorpSearchMode
     results: list[CorpSearchResult]
     total: int
 

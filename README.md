@@ -80,7 +80,8 @@ riskope/
 │   ├── config.py                     # pydantic-settings 설정
 │   ├── models.py                     # Pydantic 데이터 모델
 │   ├── dart/
-│   │   └── client.py                 # DART API 클라이언트
+│   │   ├── client.py                 # DART API 클라이언트
+│   │   └── corp_index.py             # DART 기업 검색 엔진 (LanceDB + S3)
 │   ├── sec/
 │   │   └── client.py                 # Massive.com SEC API 클라이언트
 │   ├── pipeline/
@@ -104,6 +105,7 @@ riskope/
 │   │   │           └── 001_initial_schema.py
 │   │   └── routers/
 │   │       ├── companies.py          # /api/v1/companies/*
+│   │       ├── corp_search.py        # /api/v1/corps/*
 │   │       ├── jobs.py               # /api/v1/jobs/*
 │   │       └── taxonomy.py           # /api/v1/taxonomy, /health
 │   ├── storage/
@@ -195,6 +197,33 @@ uv run riskope extract 20240315000957 --corp-name "SK하이닉스"
 uv run riskope company 00356361 --bgn-de 20230101 --end-de 20231231
 ```
 
+### DART 기업 검색
+
+DART 고유번호 목록(~90,000건)을 LanceDB에 임베딩과 함께 저장하여 기업을 검색합니다. `corp_code`를 모르더라도 기업명이나 종목코드로 검색할 수 있습니다.
+
+```bash
+# 기업 목록 다운로드 및 인덱스 구축 (최초 1회)
+uv run riskope corp-update
+
+# 기업 검색 (기본 hybrid: FTS + semantic 결합)
+uv run riskope corp-search 삼성전자
+
+# 시맨틱 검색 (임베딩 유사도)
+uv run riskope corp-search 반도체 --mode semantic
+
+# 전문 검색 (한글 형태소 매칭)
+uv run riskope corp-search 삼성 --mode fts
+
+# 코드로 기업 조회 (corp_code 8자리 또는 종목코드 6자리)
+uv run riskope corp-lookup 00126380
+uv run riskope corp-lookup 005930
+
+# 강제 전체 재임베딩 (모델 변경 시)
+uv run riskope corp-update --force
+```
+
+검색 인덱스는 로컬 `data/corp.lancedb`에 저장되며, S3(`s3://{bucket}/dart/corp_index/corp.lancedb`)에 lance 네이티브 포맷으로 백업됩니다. API 서버 시작 시 로컬에 데이터가 없으면 S3에서 자동 복원하고, S3에도 없으면 DART에서 자동 구축합니다.
+
 ### SEC (미국 기업)
 
 ```bash
@@ -247,6 +276,10 @@ uv run uvicorn riskope.api.app:app --host 0.0.0.0 --port 8000 --reload
 | `GET` | `/api/v1/companies/{corp_code}` | 기업 정보 |
 | `GET` | `/api/v1/jobs/{job_id}` | 비동기 작업 상태 |
 | `GET` | `/api/v1/taxonomy` | 택소노미 140개 카테고리 |
+| `POST` | `/api/v1/corps/update` | 기업 검색 인덱스 업데이트 |
+| `GET` | `/api/v1/corps/search?q=&mode=&limit=` | 기업 검색 (mode: fts/semantic/hybrid) |
+| `GET` | `/api/v1/corps/by-code/{corp_code}` | DART 고유번호로 기업 조회 |
+| `GET` | `/api/v1/corps/by-stock/{stock_code}` | 종목코드로 기업 조회 |
 | `GET` | `/api/v1/health` | 헬스체크 |
 
 ### 캐시 플로우
@@ -269,7 +302,8 @@ GET /jobs/{job_id}  →  { "status": "completed" }
 ### S3 저장 경로
 
 ```
-s3://{bucket}/dart/filings/{corp_code}/{report_year}/{rcept_no}.md
+s3://{bucket}/dart/filings/{corp_code}/{report_year}/{rcept_no}.md   # 공시 원문 마크다운
+s3://{bucket}/dart/corp_index/corp.lancedb/                          # 기업 검색 인덱스 (lance 네이티브)
 ```
 
 ---

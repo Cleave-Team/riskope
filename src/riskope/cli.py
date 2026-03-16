@@ -79,14 +79,18 @@ def main() -> None:
 
     # --- corp-search: 기업 검색 ---
     corp_search_parser = subparsers.add_parser("corp-search", help="DART 기업 검색")
-    corp_search_parser.add_argument("query", help="검색어 (기업명, corp_code, stock_code)")
+    corp_search_parser.add_argument("query", help="검색어 (기업명)")
     corp_search_parser.add_argument(
         "--mode",
-        choices=["auto", "exact", "fts", "semantic", "hybrid"],
-        default="auto",
-        help="검색 모드 (기본: auto)",
+        choices=["fts", "semantic", "hybrid"],
+        default="hybrid",
+        help="검색 모드 (기본: hybrid)",
     )
     corp_search_parser.add_argument("--limit", type=int, default=10, help="결과 수 (기본: 10)")
+
+    # --- corp-lookup: 코드로 기업 조회 ---
+    corp_lookup_parser = subparsers.add_parser("corp-lookup", help="코드로 DART 기업 조회")
+    corp_lookup_parser.add_argument("code", help="DART 고유번호(8자리) 또는 종목코드(6자리)")
 
     # --- cluster: 산업 클러스터링 검증 ---
     cluster_parser = subparsers.add_parser("cluster", help="산업 클러스터링 검증 (Section 4.3)")
@@ -133,6 +137,8 @@ def main() -> None:
         asyncio.run(_cmd_corp_update(args.force))
     elif args.command == "corp-search":
         asyncio.run(_cmd_corp_search(args.query, args.mode, args.limit))
+    elif args.command == "corp-lookup":
+        _cmd_corp_lookup(args.code)
     elif args.command == "cluster":
         _cmd_cluster(args.profiles, args.industry_map, args.level)
 
@@ -412,7 +418,7 @@ async def _cmd_corp_search(query: str, mode: str, limit: int) -> None:
     from riskope.dart.corp_index import DartCorpIndex
 
     settings = get_settings()
-    if mode in ("semantic", "hybrid", "auto"):
+    if mode in ("semantic", "hybrid"):
         if not settings.openai_api_key:
             console.print("[red]RISKOPE_OPENAI_API_KEY 환경변수를 설정해주세요[/]")
             sys.exit(1)
@@ -451,6 +457,37 @@ async def _cmd_corp_search(query: str, mode: str, limit: int) -> None:
         )
 
     console.print(table)
+
+
+def _cmd_corp_lookup(code: str) -> None:
+    """코드로 DART 기업 조회."""
+    from openai import AsyncOpenAI
+
+    from riskope.dart.corp_index import DartCorpIndex
+
+    settings = get_settings()
+    index = DartCorpIndex(
+        dart_api_key=settings.dart_api_key,
+        openai_client=AsyncOpenAI(api_key=settings.openai_api_key),
+        embedding_model=settings.embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
+    )
+
+    stripped = code.strip()
+    if stripped.isdigit() and len(stripped) == 6:
+        results = index.search_exact(stock_code=stripped)
+    else:
+        results = index.search_exact(corp_code=stripped)
+
+    if not results:
+        console.print(f"[yellow]{code}에 해당하는 기업 없음[/]")
+        return
+
+    r = results[0]
+    console.print(f"[bold]{r['corp_name']}[/]  ({r.get('corp_eng_name', '')})")
+    console.print(f"  고유번호: {r['corp_code']}")
+    console.print(f"  종목코드: {r.get('stock_code', '') or '-'}")
+    console.print(f"  수정일: {r.get('modify_date', '')}")
 
 
 def _validate_keys(settings: Settings) -> None:
