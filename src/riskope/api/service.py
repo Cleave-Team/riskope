@@ -59,12 +59,27 @@ async def find_cached_filing(db: AsyncSession, company_id: int, report_year: int
 
 
 async def check_latest_filing_on_dart(dart: DartClient, corp_code: str) -> dict | None:
-    reports = await dart.find_annual_reports(corp_code=corp_code)
+    reports = await dart.find_annual_reports(corp_code=corp_code, bgn_de="20180101")
+    logger.info("DART 공시 조회: corp_code=%s, 총 %d건 반환", corp_code, len(reports))
+
     annual = [r for r in reports if is_annual_report(r.get("report_nm", ""))]
+    logger.info("사업보고서 필터링: %d건 → %d건", len(reports), len(annual))
+
     if not annual:
+        if reports:
+            sample = [r.get("report_nm", "") for r in reports[:5]]
+            logger.warning("사업보고서 없음. 반환된 공시 유형: %s", sample)
         return None
+
     annual.sort(key=lambda r: r.get("rcept_dt", ""), reverse=True)
-    return annual[0]
+    latest = annual[0]
+    logger.info(
+        "최신 사업보고서: %s (%s, rcept_no=%s)",
+        latest.get("report_nm"),
+        latest.get("rcept_dt"),
+        latest.get("rcept_no"),
+    )
+    return latest
 
 
 async def is_cache_fresh(db: AsyncSession, company_id: int, dart_latest: dict) -> bool:
@@ -104,6 +119,7 @@ async def run_analysis(
     report_nm = dart_report.get("report_nm", "")
     report_year = extract_report_year(report_nm, rcept_dt_str)
     rcept_dt = date(int(rcept_dt_str[:4]), int(rcept_dt_str[4:6]), int(rcept_dt_str[6:8]))
+    logger.info("분석 시작: %s (%s), report_year=%d, rcept_no=%s", company.corp_name, report_nm, report_year, rcept_no)
 
     filing = Filing(
         company_id=company.id,
@@ -123,6 +139,7 @@ async def run_analysis(
     risk_text = await dart_client.fetch_risk_section(rcept_no)
 
     if not risk_text:
+        logger.error("위험 섹션 추출 실패: rcept_no=%s", rcept_no)
         filing.status = "failed"
         filing.error_message = "위험 섹션 추출 실패"
         job.status = "failed"
@@ -131,6 +148,7 @@ async def run_analysis(
         raise ValueError(filing.error_message)
 
     filing.raw_text_length = len(risk_text)
+    logger.info("위험 섹션 텍스트 %d자 추출 완료", len(risk_text))
     job.progress = 20
     await db.flush()
 
@@ -151,6 +169,9 @@ async def run_analysis(
     )
 
     if not profile or not profile.risk_factors:
+        logger.error(
+            "리스크 팩터 추출 실패: rcept_no=%s, extracted=%s", rcept_no, profile.total_extracted if profile else 0
+        )
         filing.status = "failed"
         filing.error_message = "리스크 팩터 추출 결과 없음"
         job.status = "failed"
@@ -184,6 +205,14 @@ async def run_analysis(
     job.progress = 100
     job.completed_at = datetime.now()
     await db.commit()
+
+    logger.info(
+        "분석 완료: %s, 추출=%d, 검증=%d, 최종=%d",
+        company.corp_name,
+        profile.total_extracted,
+        profile.total_validated,
+        len(profile.risk_factors),
+    )
 
     result = await db.execute(select(Filing).options(selectinload(Filing.risk_factors)).where(Filing.id == filing.id))
     return result.scalar_one()

@@ -76,10 +76,14 @@ async def analyze_company(
     db: AsyncSession = Depends(get_db),
 ):
     settings = get_settings()
+    logger.info(
+        "Analyze 요청: corp_code=%s, report_year=%s, force_refresh=%s", corp_code, body.report_year, body.force_refresh
+    )
     dart = DartClient(api_key=settings.dart_api_key)
 
     dart_latest = await check_latest_filing_on_dart(dart, corp_code)
     if not dart_latest:
+        logger.warning("사업보고서 없음: corp_code=%s", corp_code)
         raise HTTPException(status_code=404, detail=f"DART에서 {corp_code}의 사업보고서를 찾을 수 없습니다")
 
     corp_name = dart_latest.get("corp_name", corp_code)
@@ -138,10 +142,14 @@ async def _run_analysis_task(job_id: str, corp_code: str, dart_report: dict):
 
     from riskope.api.db.session import _get_session_factory
 
+    logger.info(
+        "Background 분석 시작: job_id=%s, corp_code=%s, report=%s", job_id, corp_code, dart_report.get("report_nm")
+    )
     settings = get_settings()
     async with _get_session_factory()() as db:
         job = await db.get(AnalysisJob, uuid.UUID(job_id))
         if not job:
+            logger.error("Job not found: %s", job_id)
             return
 
         company = await db.execute(select(Company).where(Company.corp_code == corp_code))
