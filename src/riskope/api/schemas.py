@@ -89,5 +89,32 @@ class TaxonomyCategoryResponse(BaseModel):
     description: str
 
 
+# --- Corp Search ---
+
+
+class CorpSearchResult(BaseModel):
+    corp_code: str
+    corp_name: str
+    corp_eng_name: str = ""
+    stock_code: str = ""
+    modify_date: str = ""
+    score: float | None = None
+
+
+class CorpSearchResponse(BaseModel):
+    query: str
+    mode: str
+    results: list[CorpSearchResult]
+    total: int
+
+
+class CorpUpdateResponse(BaseModel):
+    total: int
+    new: int
+    changed: int
+    deleted: int
+    embedded: int
+
+
 AnalyzeResponse.model_rebuild()
 RiskFactorsQueryResponse.model_rebuild()

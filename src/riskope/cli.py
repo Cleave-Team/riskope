@@ -73,6 +73,21 @@ def main() -> None:
     eval_parser.add_argument("profiles", nargs="+", help="파이프라인 출력 JSON 파일 경로")
     eval_parser.add_argument("--tickers", default=None, help="비교할 티커 (쉼표 구분, 미지정 시 JSON에서 추출)")
 
+    # --- corp-update: DART 기업 목록 업데이트 ---
+    corp_update_parser = subparsers.add_parser("corp-update", help="DART 기업 목록 다운로드/업데이트")
+    corp_update_parser.add_argument("--force", action="store_true", help="전체 재임베딩")
+
+    # --- corp-search: 기업 검색 ---
+    corp_search_parser = subparsers.add_parser("corp-search", help="DART 기업 검색")
+    corp_search_parser.add_argument("query", help="검색어 (기업명, corp_code, stock_code)")
+    corp_search_parser.add_argument(
+        "--mode",
+        choices=["auto", "exact", "fts", "semantic", "hybrid"],
+        default="auto",
+        help="검색 모드 (기본: auto)",
+    )
+    corp_search_parser.add_argument("--limit", type=int, default=10, help="결과 수 (기본: 10)")
+
     # --- cluster: 산업 클러스터링 검증 ---
     cluster_parser = subparsers.add_parser("cluster", help="산업 클러스터링 검증 (Section 4.3)")
     cluster_parser.add_argument(
@@ -114,6 +129,10 @@ def main() -> None:
         asyncio.run(_cmd_sec_extract(args.ticker, args.filing_date, args.period_end))
     elif args.command == "sec-company":
         asyncio.run(_cmd_sec_company(args.ticker, args.start_date, args.end_date))
+    elif args.command == "corp-update":
+        asyncio.run(_cmd_corp_update(args.force))
+    elif args.command == "corp-search":
+        asyncio.run(_cmd_corp_search(args.query, args.mode, args.limit))
     elif args.command == "cluster":
         _cmd_cluster(args.profiles, args.industry_map, args.level)
 
@@ -352,6 +371,84 @@ def _cmd_cluster(profile_paths: list[str], industry_map_path: str, level: str) -
     table.add_row("Cohen's d", f"{result.cohens_d:.3f}")
     table.add_row("AUC-ROC", f"{result.auc_score:.3f}")
     table.add_row("p-value", f"{result.p_value:.2e}")
+
+    console.print(table)
+
+
+async def _cmd_corp_update(force: bool) -> None:
+    """DART 기업 목록 다운로드/업데이트."""
+    from openai import AsyncOpenAI
+
+    from riskope.dart.corp_index import DartCorpIndex
+
+    settings = get_settings()
+    _validate_keys(settings)
+
+    index = DartCorpIndex(
+        dart_api_key=settings.dart_api_key,
+        openai_client=AsyncOpenAI(api_key=settings.openai_api_key),
+        embedding_model=settings.embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
+    )
+    stats = await index.update(force=force)
+
+    from rich.table import Table
+
+    table = Table(title="DART 기업 목록 업데이트 결과")
+    table.add_column("항목", style="cyan")
+    table.add_column("값", justify="right", style="bold")
+    table.add_row("전체", str(stats.total))
+    table.add_row("신규", str(stats.new))
+    table.add_row("변경", str(stats.changed))
+    table.add_row("삭제", str(stats.deleted))
+    table.add_row("임베딩 생성", str(stats.embedded))
+    console.print(table)
+
+
+async def _cmd_corp_search(query: str, mode: str, limit: int) -> None:
+    """DART 기업 검색."""
+    from openai import AsyncOpenAI
+
+    from riskope.dart.corp_index import DartCorpIndex
+
+    settings = get_settings()
+    if mode in ("semantic", "hybrid", "auto"):
+        if not settings.openai_api_key:
+            console.print("[red]RISKOPE_OPENAI_API_KEY 환경변수를 설정해주세요[/]")
+            sys.exit(1)
+
+    index = DartCorpIndex(
+        dart_api_key=settings.dart_api_key,
+        openai_client=AsyncOpenAI(api_key=settings.openai_api_key),
+        embedding_model=settings.embedding_model,
+        embedding_dimensions=settings.embedding_dimensions,
+    )
+    results = await index.search(query, mode=mode, limit=limit)
+
+    if not results:
+        console.print("[yellow]검색 결과 없음[/]")
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"기업 검색 결과: '{query}' (mode={mode})")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("고유번호", style="cyan")
+    table.add_column("기업명", style="bold")
+    table.add_column("영문명")
+    table.add_column("종목코드", style="green")
+    table.add_column("점수", justify="right")
+
+    for i, r in enumerate(results, 1):
+        score_str = f"{r['score']:.4f}" if r.get("score") is not None else "-"
+        table.add_row(
+            str(i),
+            r["corp_code"],
+            r["corp_name"],
+            r.get("corp_eng_name", ""),
+            r.get("stock_code", "") or "-",
+            score_str,
+        )
 
     console.print(table)
 
