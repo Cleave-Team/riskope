@@ -112,7 +112,7 @@ async def run_analysis(
 ) -> Filing:
     job.status = "running"
     job.started_at = datetime.now()
-    await db.flush()
+    await db.commit()
 
     rcept_no = dart_report["rcept_no"]
     rcept_dt_str = dart_report.get("rcept_dt", "")
