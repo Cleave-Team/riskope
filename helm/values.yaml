@@ -96,7 +96,7 @@ externalSecret:
   enabled: true
   refreshInterval: "1h"
   secretStoreRef:
-    name: aws-secrets-manager
+    name: aws-sm
     kind: ClusterSecretStore
     create: false
   target:

@@ -7,7 +7,11 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = _THIS_FILE.parent.parent.parent
+
+if not (PROJECT_ROOT / "docs").exists() and Path("/app/docs").exists():
+    PROJECT_ROOT = Path("/app")
 
 
 class Settings(BaseSettings):
