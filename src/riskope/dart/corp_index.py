@@ -100,7 +100,10 @@ class DartCorpIndex:
         )
 
     async def _embed_batch(
-        self, texts: list[str], batch_size: int = 100, max_concurrent: int = 10,
+        self,
+        texts: list[str],
+        batch_size: int = 100,
+        max_concurrent: int = 10,
     ) -> list[list[float]]:
         """텍스트 배치를 임베딩. 배치 간 병렬 호출로 처리."""
         import asyncio
@@ -282,10 +285,7 @@ class DartCorpIndex:
 
         # 임베딩
         if need_embed_indices:
-            texts = [
-                f"{new_corps[i]['corp_name']} {new_corps[i]['corp_eng_name']}"
-                for i in need_embed_indices
-            ]
+            texts = [f"{new_corps[i]['corp_name']} {new_corps[i]['corp_eng_name']}" for i in need_embed_indices]
             logger.info("임베딩 생성 중: %d건...", len(texts))
             embeddings = await self._embed_batch(texts)
             stats.embedded = len(embeddings)
@@ -326,7 +326,11 @@ class DartCorpIndex:
 
         logger.info(
             "기업 목록 업데이트 완료: total=%d, new=%d, changed=%d, deleted=%d, embedded=%d",
-            stats.total, stats.new, stats.changed, stats.deleted, stats.embedded,
+            stats.total,
+            stats.new,
+            stats.changed,
+            stats.deleted,
+            stats.embedded,
         )
 
         # S3 백업
@@ -337,9 +341,7 @@ class DartCorpIndex:
 
         return stats
 
-    def search_exact(
-        self, corp_code: str | None = None, stock_code: str | None = None
-    ) -> list[dict]:
+    def search_exact(self, corp_code: str | None = None, stock_code: str | None = None) -> list[dict]:
         """corp_code 또는 stock_code로 정확 검색."""
         if not self._table_exists():
             return []
@@ -389,19 +391,19 @@ class DartCorpIndex:
         if not self._table_exists():
             return []
 
-        # LanceDB native hybrid 시도
+        embeddings = await self._embed_batch([query])
+        query_vector = embeddings[0]
+        table = self._open_table()
+
         try:
-            embeddings = await self._embed_batch([query])
-            query_vector = embeddings[0]
-            table = self._open_table()
-            rows = table.search(query, query_type="hybrid", vector=query_vector).limit(limit).to_list()
+            rows = table.search(query_type="hybrid").vector(query_vector).text(query).limit(limit).to_list()
             return [self._from_row(r) for r in rows]
         except Exception:
             pass
 
-        # Fallback: RRF 병합
         fts_results = self.search_fts(query, limit=limit * 2)
-        sem_results = await self.search_semantic(query, limit=limit * 2)
+        sem_rows = table.search(query_vector).limit(limit * 2).to_list()
+        sem_results = [self._from_row(r) for r in sem_rows]
         return self._rrf_merge(fts_results, sem_results, limit)
 
     async def search(self, query: str, mode: str = "hybrid", limit: int = 10) -> list[dict]:
@@ -421,7 +423,12 @@ class DartCorpIndex:
 
     @staticmethod
     def _row_dict(
-        corp_code: str, corp_name: str, corp_eng_name: str, stock_code: str, modify_date: str, score: float | None = None
+        corp_code: str,
+        corp_name: str,
+        corp_eng_name: str,
+        stock_code: str,
+        modify_date: str,
+        score: float | None = None,
     ) -> dict:
         d: dict = {
             "corp_code": corp_code,
@@ -447,9 +454,7 @@ class DartCorpIndex:
         }
 
     @staticmethod
-    def _rrf_merge(
-        list_a: list[dict], list_b: list[dict], limit: int, k: int = 60
-    ) -> list[dict]:
+    def _rrf_merge(list_a: list[dict], list_b: list[dict], limit: int, k: int = 60) -> list[dict]:
         """Reciprocal Rank Fusion으로 두 결과 리스트를 병합."""
         scores: dict[str, float] = {}
         items: dict[str, dict] = {}
