@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 from google import genai
-from openai import AsyncOpenAI
+from langfuse.openai import AsyncOpenAI
 from rich.console import Console
 from rich.table import Table
 
@@ -26,6 +26,7 @@ from riskope.pipeline.mapper import TaxonomyMapper
 from riskope.pipeline.refiner import TaxonomyRefiner
 from riskope.sec.client import MassiveSecClient
 from riskope.taxonomy.loader import load_taxonomy
+from riskope.tracing import flush_traces, observe
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -95,6 +96,7 @@ class SecRiskExtractionPipeline:
 
         self._taxonomy_loaded = True
 
+    @observe(name="sec-risk-pipeline")
     async def run_for_ticker(
         self,
         ticker: str,
@@ -128,6 +130,7 @@ class SecRiskExtractionPipeline:
             filing_date=filing_date or "",
         )
 
+    @observe(name="sec-multi-report-pipeline")
     async def run_for_company(
         self,
         ticker: str,
@@ -216,6 +219,7 @@ class SecRiskExtractionPipeline:
         risk_factors = deduplicate_and_finalize(passed_results)
         console.print(f"  [bold]Final: {len(risk_factors)} risk factors[/]")
 
+        flush_traces()
         return CompanyRiskProfile(
             corp_code="",
             corp_name=corp_name,

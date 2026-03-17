@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from google import genai
-from openai import AsyncOpenAI
+from langfuse.openai import AsyncOpenAI
 from rich.console import Console
 from rich.table import Table
 
@@ -21,6 +21,7 @@ from riskope.pipeline.judge import MappingJudge
 from riskope.pipeline.mapper import TaxonomyMapper
 from riskope.pipeline.refiner import TaxonomyRefiner
 from riskope.taxonomy.loader import load_taxonomy
+from riskope.tracing import flush_traces, observe
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -86,6 +87,7 @@ class RiskExtractionPipeline:
 
         self._taxonomy_loaded = True
 
+    @observe(name="dart-risk-pipeline")
     async def run_for_document(self, rcept_no: str, corp_name: str = "") -> CompanyRiskProfile | None:
         """단일 접수번호에 대해 전체 파이프라인 실행.
 
@@ -157,7 +159,7 @@ class RiskExtractionPipeline:
 
         self._print_token_summary(extraction.usage)
 
-        return CompanyRiskProfile(
+        profile = CompanyRiskProfile(
             corp_code="",
             corp_name=corp_name,
             rcept_no=rcept_no,
@@ -169,7 +171,10 @@ class RiskExtractionPipeline:
             total_validated=len(risk_factors),
             score_distribution={k: v for k, v in score_dist.items() if v > 0},
         )
+        flush_traces()
+        return profile
 
+    @observe(name="dart-risk-pipeline")
     async def run_for_report(
         self,
         risk_text: str,
@@ -204,7 +209,7 @@ class RiskExtractionPipeline:
 
         risk_factors = deduplicate_and_finalize(passed_results)
 
-        return CompanyRiskProfile(
+        profile = CompanyRiskProfile(
             corp_code="",
             corp_name=corp_name,
             rcept_no=rcept_no,
@@ -216,6 +221,8 @@ class RiskExtractionPipeline:
             total_validated=len(risk_factors),
             score_distribution={k: v for k, v in score_dist.items() if v > 0},
         )
+        flush_traces()
+        return profile
 
     def get_refinement_candidates(self, top_n: int = 5) -> list[tuple[str, int]]:
         return self._refiner.identify_problematic_categories(self._all_judge_results, top_n=top_n)
@@ -223,6 +230,7 @@ class RiskExtractionPipeline:
     async def run_refinement(self, category_key: str) -> RefinementResult | None:
         return await self._refiner.refine_category(category_key, self._all_judge_results)
 
+    @observe(name="dart-multi-report-pipeline")
     async def run_for_company(
         self,
         corp_code: str,

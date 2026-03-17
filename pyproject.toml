@@ -26,6 +26,7 @@ dependencies = [
     "boto3>=1.36.0",
     "alembic>=1.14.0",
     "psycopg2-binary>=2.9.0",
+    "langfuse>=3.0.0",
 ]
 
 [project.scripts]

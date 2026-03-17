@@ -19,6 +19,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from riskope.models import JudgeResult, QualityScore, TaxonomyMapping
+from riskope.tracing import observe, traced_gemini_generate
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,7 @@ class MappingJudge:
         self._system_prompt = _JUDGE_SYSTEM_PROMPTS.get(locale, _JUDGE_SYSTEM_PROMPT_KR)
         self.total_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+    @observe(name="stage3-judge-evaluation")
     async def evaluate_all(self, mappings: list[TaxonomyMapping]) -> list[JudgeResult]:
         tasks = [self._evaluate_one(m) for m in mappings]
         results = await asyncio.gather(*tasks)
@@ -106,7 +108,8 @@ class MappingJudge:
             user_message = self._build_user_message(mapping)
 
             try:
-                response = await self._client.aio.models.generate_content(
+                response = await traced_gemini_generate(
+                    self._client,
                     model=self._model,
                     contents=[user_message],
                     config=types.GenerateContentConfig(
@@ -115,6 +118,7 @@ class MappingJudge:
                         response_schema=_JudgeEvaluation,
                         temperature=0.0,
                     ),
+                    name="gemini-judge-eval",
                 )
             except Exception:
                 logger.exception("Judge 호출 실패")

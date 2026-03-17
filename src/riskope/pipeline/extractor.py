@@ -17,6 +17,7 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from riskope.models import ExtractedRisk, ExtractionResult
+from riskope.tracing import observe, traced_gemini_generate
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +154,12 @@ class RiskExtractor:
         self._max_retries = max_retries
         self._system_prompt = _SYSTEM_PROMPTS.get(locale, _SYSTEM_PROMPT_KR)
 
+    @observe(name="stage1-risk-extraction")
     async def extract(self, risk_text: str) -> ExtractionResult:
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._client.aio.models.generate_content(
+                response = await traced_gemini_generate(
+                    self._client,
                     model=self._model,
                     contents=[risk_text],
                     config=types.GenerateContentConfig(
@@ -165,6 +168,7 @@ class RiskExtractor:
                         response_schema=_RiskList,
                         temperature=0.0,
                     ),
+                    name="gemini-risk-extraction",
                 )
             except Exception:
                 logger.exception(

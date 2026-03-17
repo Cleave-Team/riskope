@@ -13,6 +13,7 @@ from riskope.config import Settings, get_settings
 from riskope.dart.client import DartClient
 from riskope.pipeline.orchestrator import RiskExtractionPipeline
 from riskope.storage.s3 import upload_markdown
+from riskope.tracing import flush_traces
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +224,8 @@ async def run_analysis(
         profile.total_validated,
         len(profile.risk_factors),
     )
+
+    flush_traces()
 
     result = await db.execute(select(Filing).options(selectinload(Filing.risk_factors)).where(Filing.id == filing.id))
     return result.scalar_one()

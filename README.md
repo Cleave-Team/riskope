@@ -45,6 +45,102 @@ main.do?rcpNo={접수번호}
 
 추출된 markdown 텍스트는 TextChunker로 분할된 후 3-Stage 파이프라인에 입력됩니다.
 
+## 아키텍처
+
+### 기업명 검색 → 리스크 추출 전체 흐름
+
+```mermaid
+flowchart TB
+    subgraph Client
+        User["사용자"]
+    end
+
+    subgraph API["FastAPI Server"]
+        Search["GET /corps/search\n기업 검색"]
+        Analyze["POST /companies/{corp_code}/analyze\n리스크 분석 요청"]
+        Jobs["GET /jobs/{job_id}\n작업 상태 조회"]
+        RiskAPI["GET /companies/{corp_code}/risk-factors\n리스크 조회"]
+    end
+
+    subgraph CorpSearch["기업 검색 엔진"]
+        LanceCorps["LanceDB\ncorp.lancedb\n(~100K 기업)"]
+        FTS["FTS 검색\n(ngram)"]
+        Semantic["시맨틱 검색\n(벡터)"]
+        Hybrid["하이브리드\n(RRF 병합)"]
+    end
+
+    subgraph Cache["캐시 레이어"]
+        PG["PostgreSQL\ncompanies / filings\nrisk_factors / jobs"]
+        CacheCheck{"DB에 동일\nrcept_no\n완료 건?"}
+    end
+
+    subgraph Pipeline["3-Stage 리스크 추출 파이프라인"]
+        DART["DART API\nmain.do → viewer.do\n위험 섹션 fetch"]
+        S3["S3 업로드\n(MD 파일)"]
+        Chunk["TextChunker\n12K자 / 1K overlap"]
+        Stage1["Stage 1\nGemini Flash\n리스크 추출\ntag + quote"]
+        Stage2["Stage 2\nOpenAI Embedding\ncosine similarity\n140 카테고리 매칭"]
+        Stage3["Stage 3\nGemini Flash\nLLM-as-Judge\n1-5점 검증"]
+        Dedup["Dedup\n택소노미 키 기준\n중복 제거"]
+    end
+
+    subgraph Storage["임베딩 저장소"]
+        LanceTax["LanceDB\ntaxonomy.lancedb\n(140 카테고리 벡터)"]
+    end
+
+    User -->|"기업명 검색"| Search
+    Search --> Hybrid
+    Hybrid --> FTS & Semantic
+    FTS --> LanceCorps
+    Semantic -->|"OpenAI Embedding"| LanceCorps
+    Search -->|"corp_code 반환"| User
+
+    User -->|"corp_code로\n분석 요청"| Analyze
+    Analyze --> CacheCheck
+    CacheCheck -->|"YES"| RiskAPI
+    CacheCheck -->|"NO\n(202 Accepted)"| DART
+
+    DART -->|"위험 섹션\nmarkdown"| S3
+    DART --> Chunk
+    Chunk --> Stage1
+    Stage1 -->|"tag + quote"| Stage2
+    Stage2 -->|"유사도 비교"| LanceTax
+    Stage2 -->|"매핑 결과"| Stage3
+    Stage3 -->|"score ≥ 4"| Dedup
+    Dedup -->|"최종 결과"| PG
+
+    User -->|"job_id 폴링"| Jobs
+    User -->|"결과 조회"| RiskAPI
+    RiskAPI --> PG
+```
+
+### Stage 2 임베딩 매칭 상세
+
+```mermaid
+flowchart LR
+    subgraph Input["Stage 1 출력"]
+        Quote["supporting_quote\n원문 인용"]
+    end
+
+    subgraph Embed["임베딩"]
+        TI["task instruction +\nquote 결합"]
+        Model["OpenAI\ntext-embedding-3-small"]
+        Vec["1536차원 벡터"]
+    end
+
+    subgraph Match["매칭"]
+        Tax["택소노미 140개\n사전 계산 벡터\n(LanceDB)"]
+        Cos["cosine similarity\n행렬 연산"]
+        ArgMax["argmax\n최고 유사도\n카테고리 선택"]
+    end
+
+    Quote --> TI --> Model --> Vec
+    Vec --> Cos
+    Tax --> Cos
+    Cos --> ArgMax
+    ArgMax -->|"tertiary_category\n+ similarity_score"| Stage3["Stage 3\nJudge 검증"]
+```
+
 ## 3-Stage 파이프라인
 
 ```

@@ -18,6 +18,7 @@ import numpy as np
 from openai import AsyncOpenAI
 
 from riskope.models import ExtractedRisk, TaxonomyCategory, TaxonomyMapping
+from riskope.tracing import observe
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,7 @@ class TaxonomyMapper:
             logger.error("LanceDB 저장 실패", exc_info=True)
             raise
 
+    @observe(name="stage2-precompute-taxonomy")
     async def precompute_taxonomy(self, categories: list[TaxonomyCategory]) -> None:
         """택소노미 카테고리 description을 사전 임베딩 계산.
 
@@ -193,6 +195,7 @@ class TaxonomyMapper:
             self._category_embeddings.shape,
         )
 
+    @observe(name="stage2-taxonomy-mapping")
     async def map_risks(self, risks: list[ExtractedRisk]) -> list[TaxonomyMapping]:
         """추출된 리스크들을 택소노미에 매핑.
 

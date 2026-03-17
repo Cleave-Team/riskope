@@ -27,6 +27,7 @@ from riskope.models import (
     RefinementTestCase,
     TaxonomyMapping,
 )
+from riskope.tracing import observe, traced_gemini_generate
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,8 @@ class TaxonomyRefiner:
 
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._gemini.aio.models.generate_content(
+                response = await traced_gemini_generate(
+                    self._gemini,
                     model=self._analysis_model,
                     contents=[user_message],
                     config=types.GenerateContentConfig(
@@ -140,6 +142,7 @@ class TaxonomyRefiner:
                         response_schema=_FailurePatterns,
                         temperature=0.0,
                     ),
+                    name="gemini-failure-analysis",
                 )
                 parsed = json.loads(response.text)
                 patterns = parsed.get("patterns", [])
@@ -175,7 +178,8 @@ class TaxonomyRefiner:
 
         for attempt in range(1 + self._max_retries):
             try:
-                response = await self._gemini.aio.models.generate_content(
+                response = await traced_gemini_generate(
+                    self._gemini,
                     model=self._analysis_model,
                     contents=[user_message],
                     config=types.GenerateContentConfig(
@@ -184,6 +188,7 @@ class TaxonomyRefiner:
                         response_schema=_DescriptionCandidates,
                         temperature=0.7,
                     ),
+                    name="gemini-description-generation",
                 )
                 parsed = json.loads(response.text)
                 candidates = parsed.get("candidates", [])
@@ -285,6 +290,7 @@ class TaxonomyRefiner:
             return 0.0
         return self.compute_separation(desc_emb[0], test_case_embeddings, test_cases)
 
+    @observe(name="stage4-taxonomy-refinement")
     async def refine_category(
         self,
         category_key: str,
