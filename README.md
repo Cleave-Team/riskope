@@ -4,6 +4,111 @@ DART/SEC 공시 기반 택소노미 정렬 리스크 팩터 추출 엔진.
 
 한국 기업 사업보고서(DART)와 미국 기업 연례보고서(SEC 10-K)에서 리스크 팩터를 자동 추출하고, 140개 카테고리의 3-tier 택소노미에 매핑합니다. [Taxonomy-Aligned Risk Extraction from 10-K Filings with Autonomous Improvement Using LLMs](https://arxiv.org/abs/2601.15247) 논문의 파이프라인을 역공학 구현한 프로젝트입니다.
 
+---
+
+## 풀고자 하는 문제
+
+기업 사업보고서의 리스크 섹션에는 수십 페이지에 걸쳐 다양한 위험 요소가 서술되어 있습니다. 이를 수백~수천 개 기업에 걸쳐 체계적으로 비교하려면 **동일한 기준으로 분류**해야 합니다. 하지만 LLM에게 단순히 "리스크를 뽑아줘"라고 하면:
+
+```
+삼성전자 → "환율 변동 리스크"
+SK하이닉스 → "외환 익스포저"
+현대자동차 → "통화 위험"
+```
+
+같은 리스크를 매번 다르게 표현합니다. 이러면 기업 간 비교가 불가능합니다.
+
+### 해결 방법: 택소노미 정렬 추출
+
+사전 정의된 140개 리스크 카테고리(택소노미)에 매핑하면:
+
+```
+삼성전자    → foreign_exchange_and_currency_exposure
+SK하이닉스  → foreign_exchange_and_currency_exposure
+현대자동차  → foreign_exchange_and_currency_exposure
+```
+
+동일한 리스크가 동일한 카테고리로 분류되어 **수천 개 기업의 리스크 프로필을 체계적으로 비교**할 수 있습니다.
+
+### 왜 3단계가 필요한가
+
+단순히 LLM에게 택소노미를 주고 "이 중에서 골라줘"라고 하면 안 됩니다:
+
+```mermaid
+flowchart LR
+    subgraph Bad["단순 접근 (논문이 지적한 문제)"]
+        B1["원문 + 140개 카테고리\n한 번에 LLM에 전달"] --> B2["Context bloat\n성능 저하 + 비용 증가"]
+        B1 --> B3["부적절한 카테고리에도\n무조건 매핑"]
+    end
+
+    subgraph Good["3-Stage 접근 (논문의 해법)"]
+        G1["Stage 1\nLLM이 자유롭게\n리스크 추출\n(택소노미 모름)"]
+        G2["Stage 2\n임베딩 유사도로\n가장 가까운\n카테고리 매핑"]
+        G3["Stage 3\n다른 LLM이\n매핑 품질 검증\n(1-5점)"]
+        G1 --> G2 --> G3
+    end
+```
+
+각 단계가 다른 기술의 장점을 활용합니다:
+
+| 단계 | 기술 | 강점 | 약점 (다음 단계가 보완) |
+|------|------|------|------------------------|
+| Stage 1 | LLM | 비정형 텍스트 이해, 맥락 파악 | 일관된 라벨링 불가 |
+| Stage 2 | 임베딩 | 대규모 의미 유사도 비교, 빠름 | 부적절한 매핑도 반환 (nearest neighbor) |
+| Stage 3 | LLM Judge | 매핑 적절성 판단, FP 필터링 | — |
+
+### 실제 동작 예시
+
+SK(00181712) 사업보고서 분석:
+
+```
+원문 699,166자 (약 350페이지)
+  → 66개 청크로 분할 (12K자씩, 1K 겹침)
+  → Stage 1: 각 청크에서 리스크 추출 → 629개
+  → Stage 2: 140개 카테고리에 임베딩 매핑
+  → Stage 3: Judge가 1-5점 평가, ≥4점만 통과
+  → Dedup: 동일 카테고리 중 최고 점수만 유지
+  → 최종: 43개 리스크 팩터
+```
+
+예를 들어 "외환위험" 리스크가 추출되면:
+
+```
+Stage 1 출력:
+  tag: "외환 환율 변동에 따른 손익 영향"
+  quote: "연결회사는 국제적으로 영업활동을 영위하고 있어 외환위험에 노출..."
+
+Stage 2 매핑:
+  quote 벡터 vs 택소노미 140개 벡터 cosine similarity
+  → foreign_exchange_and_currency_exposure: 0.811 ★
+  → emerging_markets_exposure: 0.71
+  → currency_hedging_and_derivatives: 0.65
+  → (나머지 137개: 0.1~0.5)
+
+Stage 3 Judge:
+  "외환위험과 환율변동에 대한 설명이 카테고리와 정확히 일치" → 5점 ✓
+```
+
+### 산업별 리스크 패턴
+
+택소노미 매핑이 올바르면, 같은 산업의 기업들은 비슷한 리스크 프로필을 가집니다:
+
+```
+은행 (JPM, BAC):
+  ✓ interest_rate_and_yield_curve_risk (100%)
+  ✓ credit_risk_and_customer_defaults (100%)
+  ✓ capital_and_liquidity_requirements (100%)
+  ✗ raw_material_availability (0%)
+
+에너지 (XOM, CVX):
+  ✓ climate_change_and_environmental_impact (100%)
+  ✓ safety_and_environmental_regulations (100%)
+  ✓ natural_disasters_and_extreme_weather (100%)
+  ✗ clinical_trial_and_regulatory_approval_risks (0%)
+```
+
+논문은 이 패턴을 S&P 500 기업에서 통계적으로 검증했습니다 (같은 산업 기업이 63% 더 높은 리스크 프로필 유사도, Cohen's d = 1.06).
+
 ## 개요
 
 | | DART (한국) | SEC (미국) |
@@ -154,7 +259,7 @@ flowchart LR
                            │
               ┌────────────▼────────────────┐
               │   Stage 1: LLM 리스크 추출    │
-              │   GPT-4o + Function Calling  │
+              │   Gemini 2.5 Flash           │
               │   택소노미 없이 자유 추출       │
               │   → tag + supporting_quote   │
               └────────────┬────────────────┘
@@ -168,7 +273,7 @@ flowchart LR
                            │
               ┌────────────▼────────────────┐
               │   Stage 3: LLM-as-Judge     │
-              │   GPT-4o-mini               │
+              │   Gemini 2.5 Flash           │
               │  품질 점수 1-5 (threshold ≥4) │
               │   + 1문장 reasoning           │
               └────────────┬────────────────┘
@@ -299,9 +404,9 @@ RISKOPE_S3_ACCESS_KEY=          # 빈 값이면 IAM role 사용
 RISKOPE_S3_SECRET_KEY=
 
 # LLM 모델 설정 (선택)
-# RISKOPE_EXTRACTION_MODEL=gpt-4o
-# RISKOPE_JUDGE_MODEL=gpt-4o-mini
-# RISKOPE_EMBEDDING_MODEL=text-embedding-3-small
+# RISKOPE_EXTRACTION_MODEL=gemini-2.5-flash
+# RISKOPE_JUDGE_MODEL=gemini-2.5-flash
+# RISKOPE_EMBEDDING_MODEL=text-embedding-3-small  (OpenAI)
 # RISKOPE_JUDGE_THRESHOLD=4
 ```
 
@@ -521,10 +626,10 @@ alembic downgrade -1    # 한 단계 롤백
 | 항목 | 논문 (US 10-K) | Riskope |
 |---|---|---|
 | 대상 문서 | SEC 10-K Item 1A | DART 사업보고서 (DART) + SEC 10-K (SEC) |
-| 추출 LLM | Claude 4.5 Sonnet | GPT-4o |
+| 추출 LLM | Claude 4.5 Sonnet | Gemini 2.5 Flash |
 | 임베딩 모델 | Qwen3 Embedding 0.6B (로컬) | OpenAI text-embedding-3-small (API) |
 | 임베딩 차원 | 1024 | 1536 |
-| Judge LLM | 논문 미명시 | GPT-4o-mini |
+| Judge LLM | 논문 미명시 | Gemini 2.5 Flash |
 | 임베딩 저장소 | 미명시 | LanceDB (로컬 벡터 DB) |
 | 카테고리 표기 | Title Case | snake_case (Massive API 동일) |
 | 자율 택소노미 개선 | 구현 | 구현 |
