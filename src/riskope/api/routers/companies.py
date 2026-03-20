@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from riskope.api.db.models import AnalysisJob, Company, Filing
 from riskope.api.db.session import get_db
 from riskope.api.schemas import (
+    AnalyzeMode,
     AnalyzeRequest,
     AnalyzeResponse,
     CompanyResponse,
@@ -134,6 +135,9 @@ async def analyze_company(
     db.add(job)
     await db.commit()
 
+    if body.mode == AnalyzeMode.sync:
+        return await _run_analysis_sync(db, job, company, dart_latest, settings)
+
     background_tasks.add_task(_run_analysis_task, str(job.id), company.corp_code, dart_latest)
 
     return AnalyzeResponse(
@@ -141,6 +145,34 @@ async def analyze_company(
         job_id=str(job.id),
         cache_hit=False,
         filing_rcept_no=dart_latest.get("rcept_no", ""),
+    )
+
+
+async def _run_analysis_sync(
+    db: AsyncSession,
+    job: AnalysisJob,
+    company: Company,
+    dart_report: dict,
+    settings,
+) -> AnalyzeResponse:
+    """분석을 동기적으로 실행하고 완료된 결과를 즉시 반환한다."""
+    try:
+        filing = await run_analysis(db, job, company, dart_report, settings)
+    except Exception as e:
+        logger.exception("Sync 분석 실패: corp_code=%s", company.corp_code)
+        raise HTTPException(status_code=500, detail=f"분석 실패: {e}")
+
+    return AnalyzeResponse(
+        status="completed",
+        job_id=str(job.id),
+        result=RiskProfileResponse(
+            corp_code=company.corp_code,
+            corp_name=company.corp_name,
+            filing=_filing_to_response(filing),
+            risk_factors=_risk_factors_to_response(filing),
+        ),
+        cache_hit=False,
+        filing_rcept_no=filing.rcept_no,
     )
 
 

@@ -8,9 +8,17 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class AnalyzeMode(str, Enum):
+    """분석 실행 모드."""
+
+    async_ = "async"
+    sync = "sync"
+
+
 class AnalyzeRequest(BaseModel):
     report_year: int | None = Field(default=None, description="사업연도 (미지정 시 최신)")
     force_refresh: bool = Field(default=False, description="캐시 무시하고 재분석")
+    mode: AnalyzeMode = Field(default=AnalyzeMode.async_, description="async: 즉시 반환 후 폴링, sync: 분석 완료까지 대기 후 결과 반환")
 
 
 class AnalyzeResponse(BaseModel):
