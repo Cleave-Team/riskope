@@ -43,6 +43,10 @@ class RiskFactorResponse(BaseModel):
     primary_category: str
     secondary_category: str
     tertiary_category: str
+    primary_category_kr: str = ""
+    secondary_category_kr: str = ""
+    tertiary_category_kr: str = ""
+    description_kr: str = ""
     supporting_quote: str | None = None
     original_tag: str | None = None
     quality_score: int | None = None

@@ -32,9 +32,15 @@ from riskope.api.service import (
 )
 from riskope.config import get_settings
 from riskope.dart.client import DartClient
+from riskope.taxonomy.loader import KrLabel, load_kr_lookup
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/companies", tags=["companies"])
+
+
+def _get_kr_lookup() -> dict[str, KrLabel]:
+    settings = get_settings()
+    return load_kr_lookup(settings.taxonomy_path_en, settings.taxonomy_path_kr)
 
 
 def _filing_to_response(filing: Filing) -> FilingResponse:
@@ -54,19 +60,28 @@ def _filing_to_response(filing: Filing) -> FilingResponse:
 
 
 def _risk_factors_to_response(filing: Filing) -> list[RiskFactorResponse]:
-    return [
-        RiskFactorResponse(
-            primary_category=rf.primary_category,
-            secondary_category=rf.secondary_category,
-            tertiary_category=rf.tertiary_category,
-            supporting_quote=rf.supporting_quote,
-            original_tag=rf.original_tag,
-            quality_score=rf.quality_score,
-            similarity_score=rf.similarity_score,
-            reasoning=rf.reasoning,
+    kr_lookup = _get_kr_lookup()
+    results: list[RiskFactorResponse] = []
+    for rf in filing.risk_factors:
+        key = f"{rf.primary_category}/{rf.secondary_category}/{rf.tertiary_category}"
+        kr = kr_lookup.get(key, KrLabel())
+        results.append(
+            RiskFactorResponse(
+                primary_category=rf.primary_category,
+                secondary_category=rf.secondary_category,
+                tertiary_category=rf.tertiary_category,
+                primary_category_kr=kr.primary_kr,
+                secondary_category_kr=kr.secondary_kr,
+                tertiary_category_kr=kr.tertiary_kr,
+                description_kr=kr.description_kr,
+                supporting_quote=rf.supporting_quote,
+                original_tag=rf.original_tag,
+                quality_score=rf.quality_score,
+                similarity_score=rf.similarity_score,
+                reasoning=rf.reasoning,
+            )
         )
-        for rf in filing.risk_factors
-    ]
+    return results
 
 
 @router.post("/{corp_code}/analyze")
